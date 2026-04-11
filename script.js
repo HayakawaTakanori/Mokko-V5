@@ -1090,6 +1090,20 @@ function resolveBoundaryExpr(boundaryRef, axis) {
   return boundaryRef.expr || "0";
 }
 
+function describeBoundarySource(boundaryRef) {
+  if (!boundaryRef) return "-";
+  if (boundaryRef.sourceType === "parent") {
+    return boundaryRef.edge === "min" ? "親枠(min)" : "親枠(max)";
+  }
+  if (boundaryRef.sourceType === "guide") {
+    return `補助線(${boundaryRef.sourceId})`;
+  }
+  if (boundaryRef.sourceType === "part") {
+    return `部材(${boundaryRef.sourceId})`;
+  }
+  return "-";
+}
+
 function traceDependsOnBoard(traceMeta, boardId) {
   if (!traceMeta) return false;
   return (
@@ -1517,6 +1531,9 @@ function updatePartsList() {
   partsListEl.innerHTML = boards
     .map((board) => {
       const dims = resolvePartDimensions(board);
+      const boundaryInfo = board.traceMeta
+        ? `${describeBoundarySource(board.traceMeta.negative)} -> ${describeBoundarySource(board.traceMeta.positive)}`
+        : "-";
       return `
         <article class="part-card">
           <h3 class="part-title">${board.name} / ${board.drawingNo}</h3>
@@ -1530,6 +1547,7 @@ function updatePartsList() {
           <div class="row"><span>発注寸法（長さx奥行）</span><strong>${dimsLabel(getActualOrderSize(board, dims).length, getActualOrderSize(board, dims).depth)}</strong></div>
           <div class="row"><span>発注寸法</span><strong>${dimsLabel(dims.order.W ?? 0, dims.order.H ?? 0)}</strong></div>
           <div class="row"><span>座標式</span><strong>x:${board.positionFormulas.x} / y:${board.positionFormulas.y}</strong></div>
+          <div class="row"><span>境界由来</span><strong>${boundaryInfo}</strong></div>
         </article>
       `;
     })
@@ -1778,7 +1796,7 @@ function initStage() {
     }
   });
 
-  applyCabinetBtn.addEventListener("click", () => drawCabinetFrame(true));
+  applyCabinetBtn.addEventListener("click", () => drawCabinetFrame(false));
   modeSelectEl.addEventListener("change", () => {
     isDrawing = false;
     guideDragStart = null;
