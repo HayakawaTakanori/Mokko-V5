@@ -35,10 +35,10 @@ const PART_TEMPLATES = {
   },
   shelfPanel: {
     id: "shelfPanel",
-    label: "棚板",
+    label: "中棚",
     role: "shelf-panel",
     matId: "ply20Laminate",
-    orientation: "horizontal",
+    orientation: "auto",
     frontViewMode: "edge",
   },
   backPanel: {
@@ -345,6 +345,22 @@ function getTemplateForDrawing() {
   return getTemplate(templateSelectEl.value);
 }
 
+function inferLineOrientation(start, current) {
+  if (!start || !current) return "horizontal";
+  const dx = Math.abs(current.x - start.x);
+  const dy = Math.abs(current.y - start.y);
+  return dx >= dy ? "horizontal" : "vertical";
+}
+
+function resolveTemplateOrientation(templateId, start, current, localRect, orientationOverride) {
+  if (orientationOverride) return orientationOverride;
+  const template = getTemplate(templateId);
+  if (template.orientation !== "auto") return template.orientation;
+  if (start && current) return inferLineOrientation(start, current);
+  if (localRect) return localRect.width >= localRect.height ? "horizontal" : "vertical";
+  return "horizontal";
+}
+
 function clearBoards() {
   boards.forEach((board) => board.node.destroy());
   boards.length = 0;
@@ -495,15 +511,15 @@ function toRelativeFormula(value, refValue, refExpr) {
   return `(${refExpr}) - ${formatMm(Math.abs(d))}`;
 }
 
-function applyTemplateThickness(localRect, start, current, templateId) {
-  const template = getTemplate(templateId);
+function applyTemplateThickness(localRect, start, current, templateId, orientationOverride) {
   const thickness = getTemplateThickness(templateId);
+  const orientation = resolveTemplateOrientation(templateId, start, current, localRect, orientationOverride);
   const out = { ...localRect };
-  if (template.orientation === "vertical") {
+  if (orientation === "vertical") {
     out.width = thickness;
     out.x = current.x >= start.x ? start.x : start.x - thickness;
   }
-  if (template.orientation === "horizontal") {
+  if (orientation === "horizontal") {
     out.height = thickness;
     out.y = current.y >= start.y ? start.y : start.y - thickness;
     const sideInsets = getSideInsetMeta();
@@ -560,9 +576,8 @@ function detectAutoSpanMeta(templateId, localRect, thickness) {
   return sideInsets;
 }
 
-function derivePlacementMeta(templateId, localRect) {
-  const template = getTemplate(templateId);
-  if (template.orientation === "vertical") {
+function derivePlacementMeta(orientation, localRect) {
+  if (orientation === "vertical") {
     const centerX = localRect.x + localRect.width / 2;
     const side = centerX >= cabinetModel.W / 2 ? "right" : "left";
     return {
@@ -570,7 +585,7 @@ function derivePlacementMeta(templateId, localRect) {
       isMirrored: side === "right",
     };
   }
-  if (template.orientation === "horizontal") {
+  if (orientation === "horizontal") {
     const centerY = localRect.y + localRect.height / 2;
     const side = centerY >= cabinetModel.H / 2 ? "bottom" : "top";
     return {
@@ -585,17 +600,17 @@ function derivePlacementMeta(templateId, localRect) {
 }
 
 function applyPlacementMeta(board) {
-  const meta = derivePlacementMeta(board.templateId, board.localRect);
+  const meta = derivePlacementMeta(board.orientation, board.localRect);
   board.placementSide = meta.placementSide;
   board.isMirrored = meta.isMirrored;
 }
 
-function inferFinishByFrontViewMode(template, localRect, thickness) {
+function inferFinishByFrontViewMode(template, orientation, localRect, thickness) {
   if (template.frontViewMode === "edge") {
-    if (template.orientation === "vertical") {
+    if (orientation === "vertical") {
       return { W: `${thickness}`, H: `${formatMm(localRect.height)}`, D: "$D" };
     }
-    if (template.orientation === "horizontal") {
+    if (orientation === "horizontal") {
       return { W: `${formatMm(localRect.width)}`, H: `${thickness}`, D: "$D" };
     }
     return { W: `${thickness}`, H: `${formatMm(localRect.height)}`, D: "$D" };
@@ -670,11 +685,11 @@ function createBoardNode(board) {
       width: pxToMm(node.width()),
       height: pxToMm(node.height()),
     };
-    nextRect = applyTemplateThickness(nextRect, nextRect, nextRect, board.templateId);
+    nextRect = applyTemplateThickness(nextRect, nextRect, nextRect, board.templateId, board.orientation);
     board.localRect = nextRect;
     applyPlacementMeta(board);
-    board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness);
-    board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId);
+    board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness, board.orientation);
+    board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId, board.orientation);
     applyLocalRectToNode(board, nextRect);
     refreshHud();
     updatePartsList();
@@ -684,19 +699,20 @@ function createBoardNode(board) {
   return node;
 }
 
-function buildFinishFormulas(templateId, localRect, thickness) {
+function buildFinishFormulas(templateId, localRect, thickness, orientationOverride) {
   const template = getTemplate(templateId);
-  const base = inferFinishByFrontViewMode(template, localRect, thickness);
+  const orientation = resolveTemplateOrientation(templateId, null, null, localRect, orientationOverride);
+  const base = inferFinishByFrontViewMode(template, orientation, localRect, thickness);
   const autoSpanMeta = detectAutoSpanMeta(templateId, localRect, thickness);
-  if (autoSpanMeta && template.orientation === "horizontal") {
+  if (autoSpanMeta && orientation === "horizontal") {
     base.W = `$W - ${formatMm(autoSpanMeta.leftInset)} - ${formatMm(autoSpanMeta.rightInset)}`;
     base.H = `${thickness}`;
   }
   return base;
 }
 
-function buildPositionFormulas(localRect, start, end, templateId) {
-  const template = getTemplate(templateId);
+function buildPositionFormulas(localRect, start, end, templateId, orientationOverride) {
+  const orientation = resolveTemplateOrientation(templateId, start, end, localRect, orientationOverride);
   const thickness = getTemplateThickness(templateId);
   const formulas = {
     x: start && start.snappedX ? toRelativeFormula(localRect.x, start.refXValue, start.refXExpr) : formatMm(localRect.x),
@@ -704,14 +720,14 @@ function buildPositionFormulas(localRect, start, end, templateId) {
     w: formatMm(localRect.width),
     h: formatMm(localRect.height),
   };
-  if (start && end && start.snappedX && end.snappedX && template.orientation !== "vertical") {
+  if (start && end && start.snappedX && end.snappedX && orientation !== "vertical") {
     formulas.w = `(${end.refXExpr}) - (${start.refXExpr})`;
   }
-  if (start && end && start.snappedY && end.snappedY && template.orientation !== "horizontal") {
+  if (start && end && start.snappedY && end.snappedY && orientation !== "horizontal") {
     formulas.h = `(${end.refYExpr}) - (${start.refYExpr})`;
   }
   const autoSpanMeta = detectAutoSpanMeta(templateId, localRect, thickness);
-  if (autoSpanMeta && template.orientation === "horizontal") {
+  if (autoSpanMeta && orientation === "horizontal") {
     formulas.x = formatMm(autoSpanMeta.leftInset);
     formulas.w = `$W - ${formatMm(autoSpanMeta.leftInset)} - ${formatMm(autoSpanMeta.rightInset)}`;
     formulas.y = templateId === "bottomPanel" ? `$H - ${thickness}` : "0";
@@ -724,12 +740,13 @@ function createBoardFromDraw(localRect, start, end) {
   const templateId = templateSelectEl.value;
   const template = getTemplate(templateId);
   const thickness = getTemplateThickness(templateId);
+  const orientation = resolveTemplateOrientation(templateId, start, end, localRect);
   const board = {
     id: `part-${boardCounter}`,
     kind: "part",
     parentId: "cabinet-root",
     templateId,
-    orientation: template.orientation,
+    orientation,
     name: template.label,
     role: template.role,
     frontViewMode: template.frontViewMode,
@@ -740,8 +757,8 @@ function createBoardFromDraw(localRect, start, end) {
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
     marginFormulas: { W: `${DEFAULT_MARGIN_MM}`, H: `${DEFAULT_MARGIN_MM}`, D: `${DEFAULT_MARGIN_MM}` },
     localRect,
-    finishFormulas: buildFinishFormulas(templateId, localRect, thickness),
-    positionFormulas: buildPositionFormulas(localRect, start, end, templateId),
+    finishFormulas: buildFinishFormulas(templateId, localRect, thickness, orientation),
+    positionFormulas: buildPositionFormulas(localRect, start, end, templateId, orientation),
     node: null,
   };
   applyPlacementMeta(board);
@@ -857,7 +874,8 @@ function continueDraw() {
   const clamped = { x: clamp(local.x, 0, cabinetModel.W), y: clamp(local.y, 0, cabinetModel.H) };
   const snapped = snapLocalPoint(clamped);
   const raw = normalizeRect(startSnap, snapped);
-  currentLocalRect = applyTemplateThickness(raw, startSnap, snapped, templateSelectEl.value);
+  const activeOrientation = resolveTemplateOrientation(templateSelectEl.value, startSnap, snapped, raw);
+  currentLocalRect = applyTemplateThickness(raw, startSnap, snapped, templateSelectEl.value, activeOrientation);
   const stageRect = localRectToStageRect(currentLocalRect);
 
   draftRect.position({ x: stageRect.x, y: stageRect.y });
@@ -913,11 +931,11 @@ function applyRelativeDelta(deltaMm) {
       next.width += deltaMm;
       next.height += deltaMm;
     }
-    const thickened = applyTemplateThickness(next, next, next, board.templateId);
+    const thickened = applyTemplateThickness(next, next, next, board.templateId, board.orientation);
     board.localRect = thickened;
     applyPlacementMeta(board);
-    board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness);
-    board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId);
+    board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness, board.orientation);
+    board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId, board.orientation);
   } else {
     next.x += deltaMm;
     next.y += deltaMm;
