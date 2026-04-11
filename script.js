@@ -9,11 +9,62 @@ const MATERIALS = {
 };
 
 const PART_TEMPLATES = {
-  sidePanel: { id: "sidePanel", label: "側板", role: "side-panel", matId: "ply18", orientation: "vertical" },
-  topPanel: { id: "topPanel", label: "天板", role: "top-panel", matId: "ply18", orientation: "horizontal" },
-  bottomPanel: { id: "bottomPanel", label: "地板", role: "bottom-panel", matId: "ply18", orientation: "horizontal" },
-  shelfPanel: { id: "shelfPanel", label: "棚板", role: "shelf-panel", matId: "ply18", orientation: "horizontal" },
-  backPanel: { id: "backPanel", label: "背板", role: "back-panel", matId: "back5", orientation: "sheet" },
+  sidePanel: {
+    id: "sidePanel",
+    label: "側板",
+    role: "side-panel",
+    matId: "ply18",
+    orientation: "vertical",
+    frontViewMode: "edge",
+  },
+  topPanel: {
+    id: "topPanel",
+    label: "天板",
+    role: "top-panel",
+    matId: "ply18",
+    orientation: "horizontal",
+    frontViewMode: "edge",
+  },
+  bottomPanel: {
+    id: "bottomPanel",
+    label: "地板",
+    role: "bottom-panel",
+    matId: "ply18",
+    orientation: "horizontal",
+    frontViewMode: "edge",
+  },
+  shelfPanel: {
+    id: "shelfPanel",
+    label: "棚板",
+    role: "shelf-panel",
+    matId: "ply18",
+    orientation: "horizontal",
+    frontViewMode: "edge",
+  },
+  backPanel: {
+    id: "backPanel",
+    label: "背板",
+    role: "back-panel",
+    matId: "back5",
+    orientation: "sheet",
+    frontViewMode: "face",
+  },
+  doorPanel: {
+    id: "doorPanel",
+    label: "扉",
+    role: "door-panel",
+    matId: "ply18",
+    orientation: "sheet",
+    frontViewMode: "face",
+  },
+  drawerFrontPanel: {
+    id: "drawerFrontPanel",
+    label: "引き出し前板",
+    role: "drawer-front-panel",
+    matId: "ply18",
+    orientation: "sheet",
+    frontViewMode: "face",
+  },
 };
 
 const stageContainer = document.getElementById("stage-container");
@@ -449,6 +500,19 @@ function applyTemplateThickness(localRect, start, current, templateId) {
   return clampLocalRect(out);
 }
 
+function inferFinishByFrontViewMode(template, localRect, thickness) {
+  if (template.frontViewMode === "edge") {
+    if (template.orientation === "vertical") {
+      return { W: `${thickness}`, H: `${formatMm(localRect.height)}`, D: "$D" };
+    }
+    if (template.orientation === "horizontal") {
+      return { W: `${formatMm(localRect.width)}`, H: `${thickness}`, D: "$D" };
+    }
+    return { W: `${thickness}`, H: `${formatMm(localRect.height)}`, D: "$D" };
+  }
+  return { W: `${formatMm(localRect.width)}`, H: `${formatMm(localRect.height)}`, D: `${thickness}` };
+}
+
 function applyLocalRectToNode(board, rect) {
   const stageRect = localRectToStageRect(rect);
   board.node.position({ x: stageRect.x, y: stageRect.y });
@@ -463,14 +527,17 @@ function createBoardNode(board) {
     sheet: { fill: "rgba(234,88,12,0.2)", stroke: "#c2410c" },
   };
   const color = colors[board.orientation] || colors.sheet;
+  const template = getTemplate(board.templateId);
+  const isFace = template.frontViewMode === "face";
   const node = new Konva.Rect({
     x: stageRect.x,
     y: stageRect.y,
     width: stageRect.width,
     height: stageRect.height,
-    stroke: color.stroke,
-    fill: color.fill,
-    strokeWidth: 2,
+    stroke: isFace ? "#7c2d12" : color.stroke,
+    fill: isFace ? "rgba(217,119,6,0.2)" : color.fill,
+    strokeWidth: isFace ? 1.5 : 2,
+    dash: isFace ? [4, 3] : [],
     cornerRadius: 3,
     draggable: true,
     name: "board",
@@ -527,13 +594,7 @@ function createBoardNode(board) {
 
 function buildFinishFormulas(templateId, localRect, thickness) {
   const template = getTemplate(templateId);
-  if (template.orientation === "vertical") {
-    return { W: `${thickness}`, H: `${formatMm(localRect.height)}`, D: "$D" };
-  }
-  if (template.orientation === "horizontal") {
-    return { W: `${formatMm(localRect.width)}`, H: `${thickness}`, D: "$D" };
-  }
-  return { W: `${formatMm(localRect.width)}`, H: `${formatMm(localRect.height)}`, D: `${thickness}` };
+  return inferFinishByFrontViewMode(template, localRect, thickness);
 }
 
 function buildPositionFormulas(localRect, start, end, templateId) {
@@ -565,6 +626,7 @@ function createBoardFromDraw(localRect, start, end) {
     orientation: template.orientation,
     name: template.label,
     role: template.role,
+    frontViewMode: template.frontViewMode,
     matId: template.matId,
     thickness,
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
@@ -622,6 +684,7 @@ function updatePartsList() {
         <article class="part-card">
           <h3 class="part-title">${board.name} / ${board.drawingNo}</h3>
           <div class="row"><span>role</span><strong>${board.role}</strong></div>
+          <div class="row"><span>正面表示</span><strong>${board.frontViewMode === "face" ? "面表示（例外）" : "厚み表示（標準）"}</strong></div>
           <div class="row"><span>素材</span><strong>${board.matId} (t${board.thickness})</strong></div>
           <div class="row"><span>仕上がり寸法</span><strong>${dimsLabel(dims.finish.W ?? 0, dims.finish.H ?? 0)}</strong></div>
           <div class="row"><span>発注寸法</span><strong>${dimsLabel(dims.order.W ?? 0, dims.order.H ?? 0)}</strong></div>
