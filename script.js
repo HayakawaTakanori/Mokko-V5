@@ -1266,6 +1266,14 @@ function getBoardByNode(node) {
 
 function selectBoard(node) {
   selectedNode = node;
+  const board = getBoardByNode(node);
+  if (board?.orientation === "vertical") {
+    tr.enabledAnchors(["top-center", "bottom-center"]);
+  } else if (board?.orientation === "horizontal") {
+    tr.enabledAnchors(["middle-left", "middle-right"]);
+  } else {
+    tr.enabledAnchors(["top-left", "top-right", "bottom-left", "bottom-right"]);
+  }
   lastHudOperation = "move";
   tr.nodes([node]);
   refreshHud();
@@ -1522,6 +1530,7 @@ function initStage() {
   stage.on("click tap", (event) => {
     if (event.target === stage || event.target === cabinetFrameNode) {
       selectedNode = null;
+      tr.enabledAnchors(["top-left", "top-right", "bottom-left", "bottom-right"]);
       tr.nodes([]);
       refreshHud();
       layer.batchDraw();
@@ -1536,6 +1545,7 @@ function initStage() {
       guidePreviewNode.points([]);
     }
     selectedNode = null;
+    tr.enabledAnchors(["top-left", "top-right", "bottom-left", "bottom-right"]);
     tr.nodes([]);
     refreshHud();
     layer.batchDraw();
