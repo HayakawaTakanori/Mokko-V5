@@ -290,6 +290,15 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function rectsOverlap(a, b) {
+  const eps = 0.001;
+  return a.x + eps < b.x + b.width && a.x + a.width > b.x + eps && a.y + eps < b.y + b.height && a.y + a.height > b.y + eps;
+}
+
+function overlapsAnyOtherBoard(candidateRect, currentBoardId) {
+  return boards.some((item) => item.id !== currentBoardId && rectsOverlap(candidateRect, item.localRect));
+}
+
 function normalizeRect(a, b) {
   return {
     x: Math.min(a.x, b.x),
@@ -1132,6 +1141,7 @@ function createBoardNode(board) {
     refreshHud();
   });
   node.on("dragmove", () => {
+    const previousRect = { ...board.localRect };
     const current = stageToLocalPoint({ x: node.x(), y: node.y() });
     const snapped = snapLocalPoint(current);
     const nextRect = clampLocalRect({
@@ -1139,6 +1149,10 @@ function createBoardNode(board) {
       x: snapped.x,
       y: snapped.y,
     });
+    if (overlapsAnyOtherBoard(nextRect, board.id)) {
+      applyLocalRectToNode(board, previousRect);
+      return;
+    }
     board.localRect = nextRect;
     applyPlacementMeta(board);
     board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
@@ -1154,6 +1168,7 @@ function createBoardNode(board) {
     refreshHud();
   });
   node.on("transformend", () => {
+    const previousRect = { ...board.localRect };
     node.width(node.width() * node.scaleX());
     node.height(node.height() * node.scaleY());
     node.scale({ x: 1, y: 1 });
@@ -1165,6 +1180,12 @@ function createBoardNode(board) {
       height: pxToMm(node.height()),
     };
     nextRect = applyTemplateThickness(nextRect, nextRect, nextRect, board.templateId, board.orientation);
+    if (overlapsAnyOtherBoard(nextRect, board.id)) {
+      board.localRect = previousRect;
+      applyLocalRectToNode(board, previousRect);
+      layer.batchDraw();
+      return;
+    }
     board.localRect = nextRect;
     applyPlacementMeta(board);
     board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness, board.orientation);
@@ -1472,6 +1493,16 @@ function endDraw() {
   });
   const finalOrientation = currentTraceMeta?.axis === "vertical" ? "vertical" : currentTraceMeta?.axis === "horizontal" ? "horizontal" : null;
   const board = createBoardFromDraw(currentLocalRect, startSnap, endSnap, finalOrientation, currentTraceMeta);
+  if (overlapsAnyOtherBoard(board.localRect, board.id)) {
+    if (draftRect) {
+      draftRect.size({ width: 0, height: 0 });
+      draftText.text("");
+    }
+    if (draftRayLine) draftRayLine.points([]);
+    currentTraceMeta = null;
+    layer.batchDraw();
+    return;
+  }
   boards.push(board);
   layer.add(board.node);
   selectBoard(board.node);
@@ -1495,6 +1526,7 @@ function applyRelativeDelta(deltaMm) {
   const board = getBoardByNode(selectedNode);
   if (!board) return;
 
+  const previousRect = { ...board.localRect };
   const next = { ...board.localRect };
   if (lastHudOperation === "resize") {
     if (board.orientation === "vertical") next.height += deltaMm;
@@ -1515,6 +1547,13 @@ function applyRelativeDelta(deltaMm) {
     applyPlacementMeta(board);
     board.positionFormulas.x = formatMm(board.localRect.x);
     board.positionFormulas.y = formatMm(board.localRect.y);
+  }
+
+  if (overlapsAnyOtherBoard(board.localRect, board.id)) {
+    board.localRect = previousRect;
+    applyLocalRectToNode(board, previousRect);
+    layer.batchDraw();
+    return;
   }
 
   applyLocalRectToNode(board, board.localRect);
