@@ -802,17 +802,17 @@ function applyTemplateThickness(localRect, start, current, templateId, orientati
 function buildBoundaryCandidates(axis, probeValue) {
   const boundaries = [];
   const rangeEps = 0.2;
-  const pushBoundary = (value, expr, source) => {
+  const pushBoundary = (value, expr, sourceType, sourceId, edge) => {
     if (!Number.isFinite(value)) return;
-    boundaries.push({ value, expr, source });
+    boundaries.push({ value, expr, sourceType, sourceId, edge });
   };
 
   if (axis === "vertical") {
-    pushBoundary(0, "0", "parent");
-    pushBoundary(cabinetModel.H, "$H", "parent");
+    pushBoundary(0, "0", "parent", "parent", "min");
+    pushBoundary(cabinetModel.H, "$H", "parent", "parent", "max");
   } else {
-    pushBoundary(0, "0", "parent");
-    pushBoundary(cabinetModel.W, "$W", "parent");
+    pushBoundary(0, "0", "parent", "parent", "min");
+    pushBoundary(cabinetModel.W, "$W", "parent", "parent", "max");
   }
 
   boards.forEach((board) => {
@@ -820,21 +820,21 @@ function buildBoundaryCandidates(axis, probeValue) {
     const p = board.positionFormulas;
     if (axis === "vertical") {
       if (probeValue < r.x - rangeEps || probeValue > r.x + r.width + rangeEps) return;
-      pushBoundary(r.y, p.y, board.id);
-      pushBoundary(r.y + r.height, `(${p.y}) + (${p.h})`, board.id);
+      pushBoundary(r.y, p.y, "part", board.id, "min");
+      pushBoundary(r.y + r.height, `(${p.y}) + (${p.h})`, "part", board.id, "max");
     } else {
       if (probeValue < r.y - rangeEps || probeValue > r.y + r.height + rangeEps) return;
-      pushBoundary(r.x, p.x, board.id);
-      pushBoundary(r.x + r.width, `(${p.x}) + (${p.w})`, board.id);
+      pushBoundary(r.x, p.x, "part", board.id, "min");
+      pushBoundary(r.x + r.width, `(${p.x}) + (${p.w})`, "part", board.id, "max");
     }
   });
 
   guideLines.forEach((guide) => {
     if (axis === "vertical" && guide.orientation === "horizontal") {
-      pushBoundary(guide.value, guide.expr, guide.id);
+      pushBoundary(guide.value, guide.expr, "guide", guide.id, "line");
     }
     if (axis === "horizontal" && guide.orientation === "vertical") {
-      pushBoundary(guide.value, guide.expr, guide.id);
+      pushBoundary(guide.value, guide.expr, "guide", guide.id, "line");
     }
   });
 
@@ -857,7 +857,9 @@ function raycastBidirectional(boundaries, seedValue) {
 
 function buildTraceLengthFormula(traceMeta) {
   if (!traceMeta) return null;
-  return `(${traceMeta.positive.expr}) - (${traceMeta.negative.expr})`;
+  const negativeExpr = resolveBoundaryExpr(traceMeta.negative, traceMeta.axis);
+  const positiveExpr = resolveBoundaryExpr(traceMeta.positive, traceMeta.axis);
+  return `(${positiveExpr}) - (${negativeExpr})`;
 }
 
 function expandTracePlacement(start, current, templateId, orientationOverride) {
@@ -899,6 +901,106 @@ function expandTracePlacement(start, current, templateId, orientationOverride) {
     orientation,
     traceMeta: { axis: "horizontal", probe: probeY, negative: hits.negative, positive: hits.positive },
   };
+}
+
+function resolveBoundaryValue(boundaryRef, axis) {
+  if (!boundaryRef) return null;
+  if (boundaryRef.sourceType === "parent") {
+    if (axis === "vertical") return boundaryRef.edge === "min" ? 0 : cabinetModel.H;
+    return boundaryRef.edge === "min" ? 0 : cabinetModel.W;
+  }
+  if (boundaryRef.sourceType === "guide") {
+    const guide = guideLines.find((item) => item.id === boundaryRef.sourceId);
+    return guide ? guide.value : null;
+  }
+  if (boundaryRef.sourceType === "part") {
+    const board = boards.find((item) => item.id === boundaryRef.sourceId);
+    if (!board) return null;
+    if (axis === "vertical") return boundaryRef.edge === "min" ? board.localRect.y : board.localRect.y + board.localRect.height;
+    return boundaryRef.edge === "min" ? board.localRect.x : board.localRect.x + board.localRect.width;
+  }
+  return null;
+}
+
+function resolveBoundaryExpr(boundaryRef, axis) {
+  if (!boundaryRef) return "0";
+  if (boundaryRef.sourceType === "parent") {
+    if (axis === "vertical") return boundaryRef.edge === "min" ? "0" : "$H";
+    return boundaryRef.edge === "min" ? "0" : "$W";
+  }
+  if (boundaryRef.sourceType === "guide") {
+    const guide = guideLines.find((item) => item.id === boundaryRef.sourceId);
+    return guide ? guide.expr : boundaryRef.expr || "0";
+  }
+  if (boundaryRef.sourceType === "part") {
+    const board = boards.find((item) => item.id === boundaryRef.sourceId);
+    if (!board) return boundaryRef.expr || "0";
+    if (axis === "vertical") {
+      return boundaryRef.edge === "min" ? board.positionFormulas.y : `(${board.positionFormulas.y}) + (${board.positionFormulas.h})`;
+    }
+    return boundaryRef.edge === "min" ? board.positionFormulas.x : `(${board.positionFormulas.x}) + (${board.positionFormulas.w})`;
+  }
+  return boundaryRef.expr || "0";
+}
+
+function traceDependsOnBoard(traceMeta, boardId) {
+  if (!traceMeta) return false;
+  return (
+    (traceMeta.negative?.sourceType === "part" && traceMeta.negative.sourceId === boardId) ||
+    (traceMeta.positive?.sourceType === "part" && traceMeta.positive.sourceId === boardId)
+  );
+}
+
+function recalcTraceLinkedBoard(board) {
+  if (!board.traceMeta) return false;
+  const before = JSON.stringify(board.localRect);
+  const axis = board.traceMeta.axis;
+  const negative = resolveBoundaryValue(board.traceMeta.negative, axis);
+  const positive = resolveBoundaryValue(board.traceMeta.positive, axis);
+  if (negative === null || positive === null || positive <= negative) return false;
+
+  if (axis === "horizontal") {
+    board.localRect.x = negative;
+    board.localRect.width = positive - negative;
+  } else {
+    board.localRect.y = negative;
+    board.localRect.height = positive - negative;
+  }
+  board.localRect = clampLocalRect(board.localRect);
+  board.finishFormulas = buildFinishFormulas(board.templateId, board.localRect, board.thickness, board.orientation);
+  board.positionFormulas = buildPositionFormulas(board.localRect, null, null, board.templateId, board.orientation);
+
+  const lengthFormula = buildTraceLengthFormula(board.traceMeta);
+  if (lengthFormula && axis === "horizontal") {
+    board.finishFormulas.W = lengthFormula;
+    board.positionFormulas.w = lengthFormula;
+    board.positionFormulas.x = resolveBoundaryExpr(board.traceMeta.negative, axis);
+  }
+  if (lengthFormula && axis === "vertical") {
+    board.finishFormulas.H = lengthFormula;
+    board.positionFormulas.h = lengthFormula;
+    board.positionFormulas.y = resolveBoundaryExpr(board.traceMeta.negative, axis);
+  }
+  applyPlacementMeta(board);
+  applyLocalRectToNode(board, board.localRect);
+  return before !== JSON.stringify(board.localRect);
+}
+
+function propagateLinkedBoardsFrom(changedBoardId) {
+  const queue = [changedBoardId];
+  const expanded = new Set();
+  while (queue.length > 0) {
+    const sourceId = queue.shift();
+    boards.forEach((board) => {
+      if (board.id === sourceId) return;
+      if (!traceDependsOnBoard(board.traceMeta, sourceId)) return;
+      const changed = recalcTraceLinkedBoard(board);
+      if (changed && !expanded.has(board.id)) {
+        expanded.add(board.id);
+        queue.push(board.id);
+      }
+    });
+  }
 }
 
 function buildTracePreviewPoints(traceMeta) {
@@ -1041,6 +1143,7 @@ function createBoardNode(board) {
     board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
     board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
     applyLocalRectToNode(board, nextRect);
+    propagateLinkedBoardsFrom(board.id);
     refreshHud();
     updatePartsList();
     layer.batchDraw();
@@ -1066,6 +1169,7 @@ function createBoardNode(board) {
     board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness, board.orientation);
     board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId, board.orientation);
     applyLocalRectToNode(board, nextRect);
+    propagateLinkedBoardsFrom(board.id);
     refreshHud();
     updatePartsList();
     layer.batchDraw();
@@ -1362,6 +1466,7 @@ function applyRelativeDelta(deltaMm) {
   }
 
   applyLocalRectToNode(board, board.localRect);
+  propagateLinkedBoardsFrom(board.id);
   updatePartsList();
   refreshHud();
   layer.batchDraw();
