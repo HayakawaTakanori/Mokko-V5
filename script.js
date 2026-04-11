@@ -299,6 +299,53 @@ function overlapsAnyOtherBoard(candidateRect, currentBoardId) {
   return boards.some((item) => item.id !== currentBoardId && rectsOverlap(candidateRect, item.localRect));
 }
 
+function hasAnyBoardOverlap() {
+  for (let i = 0; i < boards.length; i += 1) {
+    for (let j = i + 1; j < boards.length; j += 1) {
+      if (rectsOverlap(boards[i].localRect, boards[j].localRect)) return true;
+    }
+  }
+  return false;
+}
+
+function snapshotBoardsState() {
+  const snap = {};
+  boards.forEach((board) => {
+    snap[board.id] = {
+      localRect: { ...board.localRect },
+      finishFormulas: { ...board.finishFormulas },
+      positionFormulas: { ...board.positionFormulas },
+      placementSide: board.placementSide,
+      isMirrored: board.isMirrored,
+    };
+  });
+  return snap;
+}
+
+function restoreBoardsState(snapshot) {
+  boards.forEach((board) => {
+    const saved = snapshot[board.id];
+    if (!saved) return;
+    board.localRect = { ...saved.localRect };
+    board.finishFormulas = { ...saved.finishFormulas };
+    board.positionFormulas = { ...saved.positionFormulas };
+    board.placementSide = saved.placementSide;
+    board.isMirrored = saved.isMirrored;
+    applyLocalRectToNode(board, board.localRect);
+  });
+}
+
+function runWithPropagationGuard(sourceBoardId, mutateFn) {
+  const snapshot = snapshotBoardsState();
+  mutateFn();
+  propagateLinkedBoardsFrom(sourceBoardId);
+  if (hasAnyBoardOverlap()) {
+    restoreBoardsState(snapshot);
+    return false;
+  }
+  return true;
+}
+
 function normalizeRect(a, b) {
   return {
     x: Math.min(a.x, b.x),
@@ -1141,7 +1188,6 @@ function createBoardNode(board) {
     refreshHud();
   });
   node.on("dragmove", () => {
-    const previousRect = { ...board.localRect };
     const current = stageToLocalPoint({ x: node.x(), y: node.y() });
     const snapped = snapLocalPoint(current);
     const nextRect = clampLocalRect({
@@ -1149,16 +1195,17 @@ function createBoardNode(board) {
       x: snapped.x,
       y: snapped.y,
     });
-    if (overlapsAnyOtherBoard(nextRect, board.id)) {
-      applyLocalRectToNode(board, previousRect);
+    const accepted = runWithPropagationGuard(board.id, () => {
+      board.localRect = nextRect;
+      applyPlacementMeta(board);
+      board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
+      board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
+      applyLocalRectToNode(board, nextRect);
+    });
+    if (!accepted) {
+      applyLocalRectToNode(board, board.localRect);
       return;
     }
-    board.localRect = nextRect;
-    applyPlacementMeta(board);
-    board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
-    board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
-    applyLocalRectToNode(board, nextRect);
-    propagateLinkedBoardsFrom(board.id);
     refreshHud();
     updatePartsList();
     layer.batchDraw();
@@ -1168,7 +1215,6 @@ function createBoardNode(board) {
     refreshHud();
   });
   node.on("transformend", () => {
-    const previousRect = { ...board.localRect };
     node.width(node.width() * node.scaleX());
     node.height(node.height() * node.scaleY());
     node.scale({ x: 1, y: 1 });
@@ -1180,18 +1226,18 @@ function createBoardNode(board) {
       height: pxToMm(node.height()),
     };
     nextRect = applyTemplateThickness(nextRect, nextRect, nextRect, board.templateId, board.orientation);
-    if (overlapsAnyOtherBoard(nextRect, board.id)) {
-      board.localRect = previousRect;
-      applyLocalRectToNode(board, previousRect);
+    const accepted = runWithPropagationGuard(board.id, () => {
+      board.localRect = nextRect;
+      applyPlacementMeta(board);
+      board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness, board.orientation);
+      board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId, board.orientation);
+      applyLocalRectToNode(board, nextRect);
+    });
+    if (!accepted) {
+      applyLocalRectToNode(board, board.localRect);
       layer.batchDraw();
       return;
     }
-    board.localRect = nextRect;
-    applyPlacementMeta(board);
-    board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness, board.orientation);
-    board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId, board.orientation);
-    applyLocalRectToNode(board, nextRect);
-    propagateLinkedBoardsFrom(board.id);
     refreshHud();
     updatePartsList();
     layer.batchDraw();
@@ -1526,38 +1572,36 @@ function applyRelativeDelta(deltaMm) {
   const board = getBoardByNode(selectedNode);
   if (!board) return;
 
-  const previousRect = { ...board.localRect };
-  const next = { ...board.localRect };
-  if (lastHudOperation === "resize") {
-    if (board.orientation === "vertical") next.height += deltaMm;
-    else if (board.orientation === "horizontal") next.width += deltaMm;
-    else {
-      next.width += deltaMm;
-      next.height += deltaMm;
+  const accepted = runWithPropagationGuard(board.id, () => {
+    const next = { ...board.localRect };
+    if (lastHudOperation === "resize") {
+      if (board.orientation === "vertical") next.height += deltaMm;
+      else if (board.orientation === "horizontal") next.width += deltaMm;
+      else {
+        next.width += deltaMm;
+        next.height += deltaMm;
+      }
+      const thickened = applyTemplateThickness(next, next, next, board.templateId, board.orientation);
+      board.localRect = thickened;
+      applyPlacementMeta(board);
+      board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness, board.orientation);
+      board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId, board.orientation);
+    } else {
+      next.x += deltaMm;
+      next.y += deltaMm;
+      board.localRect = clampLocalRect(next);
+      applyPlacementMeta(board);
+      board.positionFormulas.x = formatMm(board.localRect.x);
+      board.positionFormulas.y = formatMm(board.localRect.y);
     }
-    const thickened = applyTemplateThickness(next, next, next, board.templateId, board.orientation);
-    board.localRect = thickened;
-    applyPlacementMeta(board);
-    board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness, board.orientation);
-    board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId, board.orientation);
-  } else {
-    next.x += deltaMm;
-    next.y += deltaMm;
-    board.localRect = clampLocalRect(next);
-    applyPlacementMeta(board);
-    board.positionFormulas.x = formatMm(board.localRect.x);
-    board.positionFormulas.y = formatMm(board.localRect.y);
-  }
-
-  if (overlapsAnyOtherBoard(board.localRect, board.id)) {
-    board.localRect = previousRect;
-    applyLocalRectToNode(board, previousRect);
+    applyLocalRectToNode(board, board.localRect);
+  });
+  if (!accepted) {
+    applyLocalRectToNode(board, board.localRect);
     layer.batchDraw();
     return;
   }
 
-  applyLocalRectToNode(board, board.localRect);
-  propagateLinkedBoardsFrom(board.id);
   updatePartsList();
   refreshHud();
   layer.batchDraw();
