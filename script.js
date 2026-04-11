@@ -510,6 +510,36 @@ function applyTemplateThickness(localRect, start, current, templateId) {
   return clampLocalRect(out);
 }
 
+function derivePlacementMeta(templateId, localRect) {
+  const template = getTemplate(templateId);
+  if (template.orientation === "vertical") {
+    const centerX = localRect.x + localRect.width / 2;
+    const side = centerX >= cabinetModel.W / 2 ? "right" : "left";
+    return {
+      placementSide: side,
+      isMirrored: side === "right",
+    };
+  }
+  if (template.orientation === "horizontal") {
+    const centerY = localRect.y + localRect.height / 2;
+    const side = centerY >= cabinetModel.H / 2 ? "bottom" : "top";
+    return {
+      placementSide: side,
+      isMirrored: side === "bottom",
+    };
+  }
+  return {
+    placementSide: "center",
+    isMirrored: false,
+  };
+}
+
+function applyPlacementMeta(board) {
+  const meta = derivePlacementMeta(board.templateId, board.localRect);
+  board.placementSide = meta.placementSide;
+  board.isMirrored = meta.isMirrored;
+}
+
 function inferFinishByFrontViewMode(template, localRect, thickness) {
   if (template.frontViewMode === "edge") {
     if (template.orientation === "vertical") {
@@ -567,6 +597,7 @@ function createBoardNode(board) {
       y: snapped.y,
     });
     board.localRect = nextRect;
+    applyPlacementMeta(board);
     board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
     board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
     applyLocalRectToNode(board, nextRect);
@@ -591,6 +622,7 @@ function createBoardNode(board) {
     };
     nextRect = applyTemplateThickness(nextRect, nextRect, nextRect, board.templateId);
     board.localRect = nextRect;
+    applyPlacementMeta(board);
     board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness);
     board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId);
     applyLocalRectToNode(board, nextRect);
@@ -637,6 +669,8 @@ function createBoardFromDraw(localRect, start, end) {
     name: template.label,
     role: template.role,
     frontViewMode: template.frontViewMode,
+    placementSide: "center",
+    isMirrored: false,
     matId: template.matId,
     thickness,
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
@@ -646,6 +680,7 @@ function createBoardFromDraw(localRect, start, end) {
     positionFormulas: buildPositionFormulas(localRect, start, end, templateId),
     node: null,
   };
+  applyPlacementMeta(board);
   board.node = createBoardNode(board);
   boardCounter += 1;
   return board;
@@ -695,6 +730,8 @@ function updatePartsList() {
           <h3 class="part-title">${board.name} / ${board.drawingNo}</h3>
           <div class="row"><span>role</span><strong>${board.role}</strong></div>
           <div class="row"><span>正面表示</span><strong>${board.frontViewMode === "face" ? "面表示（例外）" : "厚み表示（標準）"}</strong></div>
+          <div class="row"><span>配置側</span><strong>${board.placementSide}</strong></div>
+          <div class="row"><span>反転</span><strong>${board.isMirrored ? "右/下で反転" : "左/上で標準"}</strong></div>
           <div class="row"><span>素材</span><strong>${board.matId} (t${board.thickness})</strong></div>
           <div class="row"><span>仕上がり寸法</span><strong>${dimsLabel(dims.finish.W ?? 0, dims.finish.H ?? 0)}</strong></div>
           <div class="row"><span>発注寸法</span><strong>${dimsLabel(dims.order.W ?? 0, dims.order.H ?? 0)}</strong></div>
@@ -814,12 +851,14 @@ function applyRelativeDelta(deltaMm) {
     }
     const thickened = applyTemplateThickness(next, next, next, board.templateId);
     board.localRect = thickened;
+    applyPlacementMeta(board);
     board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness);
     board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId);
   } else {
     next.x += deltaMm;
     next.y += deltaMm;
     board.localRect = clampLocalRect(next);
+    applyPlacementMeta(board);
     board.positionFormulas.x = formatMm(board.localRect.x);
     board.positionFormulas.y = formatMm(board.localRect.y);
   }
