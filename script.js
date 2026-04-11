@@ -94,6 +94,7 @@ let selectedNode = null;
 let draftRect = null;
 let draftText = null;
 let draftRayLine = null;
+let constraintOverlay = null;
 let lastHudOperation = "move";
 const keyBuffer = { text: "" };
 const boards = [];
@@ -1178,6 +1179,48 @@ function createBoardNode(board) {
   return node;
 }
 
+function getConstraintLabel(board) {
+  if (!board) return "拘束なし";
+  if (board.orientation === "vertical") return "拘束: 厚み方向固定（縦材）/ 高さのみ変更可";
+  if (board.orientation === "horizontal") return "拘束: 厚み方向固定（横材）/ 幅のみ変更可";
+  return "拘束: 面材（両方向変更可）";
+}
+
+function updateConstraintOverlay(board) {
+  if (!constraintOverlay) {
+    constraintOverlay = new Konva.Line({
+      stroke: "#f59e0b",
+      strokeWidth: 2,
+      dash: [5, 4],
+      listening: false,
+      visible: false,
+    });
+    layer.add(constraintOverlay);
+  }
+  if (!board) {
+    constraintOverlay.visible(false);
+    return;
+  }
+  const rect = board.localRect;
+  if (board.orientation === "vertical") {
+    const cx = rect.x + rect.width / 2;
+    const p1 = localToStagePoint({ x: cx, y: rect.y });
+    const p2 = localToStagePoint({ x: cx, y: rect.y + rect.height });
+    constraintOverlay.points([p1.x, p1.y, p2.x, p2.y]);
+    constraintOverlay.visible(true);
+    return;
+  }
+  if (board.orientation === "horizontal") {
+    const cy = rect.y + rect.height / 2;
+    const p1 = localToStagePoint({ x: rect.x, y: cy });
+    const p2 = localToStagePoint({ x: rect.x + rect.width, y: cy });
+    constraintOverlay.points([p1.x, p1.y, p2.x, p2.y]);
+    constraintOverlay.visible(true);
+    return;
+  }
+  constraintOverlay.visible(false);
+}
+
 function buildFinishFormulas(templateId, localRect, thickness, orientationOverride) {
   const template = getTemplate(templateId);
   const orientation = resolveTemplateOrientation(templateId, null, null, localRect, orientationOverride);
@@ -1276,6 +1319,7 @@ function selectBoard(node) {
   }
   lastHudOperation = "move";
   tr.nodes([node]);
+  updateConstraintOverlay(board);
   refreshHud();
   layer.batchDraw();
 }
@@ -1327,14 +1371,14 @@ function updatePartsList() {
 
 function refreshHud() {
   if (!selectedNode) {
-    hudStateEl.innerHTML = "<br />選択なし";
+    hudStateEl.innerHTML = "<br />選択なし<br />拘束: -";
     return;
   }
   const board = getBoardByNode(selectedNode);
   if (!board) return;
   hudStateEl.innerHTML = `<br />選択中: ${board.name} / ${board.drawingNo}<br />モード: <code>${lastHudOperation}</code><br />入力バッファ: <code>${
     keyBuffer.text || "(empty)"
-  }</code>`;
+  }</code><br />${getConstraintLabel(board)}`;
 }
 
 function beginDraw(event) {
@@ -1532,6 +1576,7 @@ function initStage() {
       selectedNode = null;
       tr.enabledAnchors(["top-left", "top-right", "bottom-left", "bottom-right"]);
       tr.nodes([]);
+      updateConstraintOverlay(null);
       refreshHud();
       layer.batchDraw();
     }
@@ -1547,6 +1592,7 @@ function initStage() {
     selectedNode = null;
     tr.enabledAnchors(["top-left", "top-right", "bottom-left", "bottom-right"]);
     tr.nodes([]);
+    updateConstraintOverlay(null);
     refreshHud();
     layer.batchDraw();
   });
