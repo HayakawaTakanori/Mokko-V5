@@ -506,8 +506,58 @@ function applyTemplateThickness(localRect, start, current, templateId) {
   if (template.orientation === "horizontal") {
     out.height = thickness;
     out.y = current.y >= start.y ? start.y : start.y - thickness;
+    const sideInsets = getSideInsetMeta();
+    const traceTolerance = pxToMm(SNAP_DISTANCE_PX) * 1.5;
+    const isTopTrace = Math.min(start.y, current.y) <= traceTolerance;
+    const isBottomTrace = Math.max(start.y, current.y) >= cabinetModel.H - traceTolerance;
+    const shouldAutoSpan =
+      !!sideInsets &&
+      ((templateId === "topPanel" && isTopTrace) || (templateId === "bottomPanel" && isBottomTrace));
+    if (shouldAutoSpan) {
+      out.x = sideInsets.leftInner;
+      out.width = sideInsets.rightInner - sideInsets.leftInner;
+      out.y = templateId === "bottomPanel" ? cabinetModel.H - thickness : 0;
+    }
   }
   return clampLocalRect(out);
+}
+
+function getSideInsetMeta() {
+  const sideBoards = boards.filter((board) => board.role === "side-panel");
+  if (sideBoards.length < 2) return null;
+
+  const center = cabinetModel.W / 2;
+  const leftBoards = sideBoards.filter(
+    (board) => board.placementSide === "left" || board.localRect.x + board.localRect.width / 2 < center
+  );
+  const rightBoards = sideBoards.filter(
+    (board) => board.placementSide === "right" || board.localRect.x + board.localRect.width / 2 >= center
+  );
+  if (leftBoards.length === 0 || rightBoards.length === 0) return null;
+
+  const leftInner = Math.max(...leftBoards.map((board) => board.localRect.x + board.localRect.width));
+  const rightInner = Math.min(...rightBoards.map((board) => board.localRect.x));
+  if (!Number.isFinite(leftInner) || !Number.isFinite(rightInner) || rightInner <= leftInner) return null;
+
+  return {
+    leftInner,
+    rightInner,
+    leftInset: leftInner,
+    rightInset: cabinetModel.W - rightInner,
+  };
+}
+
+function detectAutoSpanMeta(templateId, localRect, thickness) {
+  if (templateId !== "topPanel" && templateId !== "bottomPanel") return null;
+  const sideInsets = getSideInsetMeta();
+  if (!sideInsets) return null;
+  const expectedWidth = sideInsets.rightInner - sideInsets.leftInner;
+  const tolerance = 0.6;
+  const expectedY = templateId === "bottomPanel" ? cabinetModel.H - thickness : 0;
+  if (Math.abs(localRect.x - sideInsets.leftInner) > tolerance) return null;
+  if (Math.abs(localRect.width - expectedWidth) > tolerance) return null;
+  if (Math.abs(localRect.y - expectedY) > tolerance) return null;
+  return sideInsets;
 }
 
 function derivePlacementMeta(templateId, localRect) {
@@ -636,11 +686,18 @@ function createBoardNode(board) {
 
 function buildFinishFormulas(templateId, localRect, thickness) {
   const template = getTemplate(templateId);
-  return inferFinishByFrontViewMode(template, localRect, thickness);
+  const base = inferFinishByFrontViewMode(template, localRect, thickness);
+  const autoSpanMeta = detectAutoSpanMeta(templateId, localRect, thickness);
+  if (autoSpanMeta && template.orientation === "horizontal") {
+    base.W = `$W - ${formatMm(autoSpanMeta.leftInset)} - ${formatMm(autoSpanMeta.rightInset)}`;
+    base.H = `${thickness}`;
+  }
+  return base;
 }
 
 function buildPositionFormulas(localRect, start, end, templateId) {
   const template = getTemplate(templateId);
+  const thickness = getTemplateThickness(templateId);
   const formulas = {
     x: start && start.snappedX ? toRelativeFormula(localRect.x, start.refXValue, start.refXExpr) : formatMm(localRect.x),
     y: start && start.snappedY ? toRelativeFormula(localRect.y, start.refYValue, start.refYExpr) : formatMm(localRect.y),
@@ -652,6 +709,13 @@ function buildPositionFormulas(localRect, start, end, templateId) {
   }
   if (start && end && start.snappedY && end.snappedY && template.orientation !== "horizontal") {
     formulas.h = `(${end.refYExpr}) - (${start.refYExpr})`;
+  }
+  const autoSpanMeta = detectAutoSpanMeta(templateId, localRect, thickness);
+  if (autoSpanMeta && template.orientation === "horizontal") {
+    formulas.x = formatMm(autoSpanMeta.leftInset);
+    formulas.w = `$W - ${formatMm(autoSpanMeta.leftInset)} - ${formatMm(autoSpanMeta.rightInset)}`;
+    formulas.y = templateId === "bottomPanel" ? `$H - ${thickness}` : "0";
+    formulas.h = `${thickness}`;
   }
   return formulas;
 }
