@@ -373,6 +373,22 @@ function dimsLabel(width, height) {
   return `${Math.round(width)} x ${Math.round(height)} mm`;
 }
 
+function mmLabel(value) {
+  return `${Math.round(value * 10) / 10} mm`;
+}
+
+function getActualLengthMm(board) {
+  if (board.orientation === "horizontal") return board.localRect.width;
+  if (board.orientation === "vertical") return board.localRect.height;
+  return Math.max(board.localRect.width, board.localRect.height);
+}
+
+function getActualOrderSize(board, dims) {
+  const length = getActualLengthMm(board);
+  const depth = dims.order.D ?? cabinetModel.D;
+  return { length, depth };
+}
+
 function mmToPx(mm) {
   return mm * cabinetModel.scale;
 }
@@ -1415,7 +1431,9 @@ function updateSummaryList() {
   }
   const map = {};
   boards.forEach((board) => {
-    const key = `${board.name} / ${board.matId} / t${board.thickness}`;
+    const dims = resolvePartDimensions(board);
+    const actual = getActualOrderSize(board, dims);
+    const key = `${board.name} / ${board.matId} / t${board.thickness} / ${Math.round(actual.length)}x${Math.round(actual.depth)}`;
     map[key] = (map[key] || 0) + 1;
   });
   summaryListEl.innerHTML = Object.entries(map)
@@ -1444,6 +1462,8 @@ function updatePartsList() {
           <div class="row"><span>反転</span><strong>${board.isMirrored ? "右/下で反転" : "左/上で標準"}</strong></div>
           <div class="row"><span>素材</span><strong>${board.matId} (t${board.thickness})</strong></div>
           <div class="row"><span>仕上がり寸法</span><strong>${dimsLabel(dims.finish.W ?? 0, dims.finish.H ?? 0)}</strong></div>
+          <div class="row"><span>実部品寸法（長さx奥行）</span><strong>${dimsLabel(getActualLengthMm(board), dims.finish.D ?? cabinetModel.D)}</strong></div>
+          <div class="row"><span>発注寸法（長さx奥行）</span><strong>${dimsLabel(getActualOrderSize(board, dims).length, getActualOrderSize(board, dims).depth)}</strong></div>
           <div class="row"><span>発注寸法</span><strong>${dimsLabel(dims.order.W ?? 0, dims.order.H ?? 0)}</strong></div>
           <div class="row"><span>座標式</span><strong>x:${board.positionFormulas.x} / y:${board.positionFormulas.y}</strong></div>
         </article>
