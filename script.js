@@ -299,6 +299,16 @@ function overlapsAnyOtherBoard(candidateRect, currentBoardId) {
   return boards.some((item) => item.id !== currentBoardId && rectsOverlap(candidateRect, item.localRect));
 }
 
+function applyMoveAxisConstraint(nextRect, baseRect, orientation) {
+  if (orientation === "vertical") {
+    return { ...nextRect, y: baseRect.y };
+  }
+  if (orientation === "horizontal") {
+    return { ...nextRect, x: baseRect.x };
+  }
+  return nextRect;
+}
+
 function hasAnyBoardOverlap() {
   for (let i = 0; i < boards.length; i += 1) {
     for (let j = i + 1; j < boards.length; j += 1) {
@@ -1190,16 +1200,23 @@ function createBoardNode(board) {
   node.on("dragmove", () => {
     const current = stageToLocalPoint({ x: node.x(), y: node.y() });
     const snapped = snapLocalPoint(current);
-    const nextRect = clampLocalRect({
+    const rawRect = clampLocalRect({
       ...board.localRect,
       x: snapped.x,
       y: snapped.y,
     });
+    const nextRect = applyMoveAxisConstraint(rawRect, board.localRect, board.orientation);
     const accepted = runWithPropagationGuard(board.id, () => {
       board.localRect = nextRect;
       applyPlacementMeta(board);
-      board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
-      board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
+      if (board.orientation === "vertical") {
+        board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
+      } else if (board.orientation === "horizontal") {
+        board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
+      } else {
+        board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
+        board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
+      }
       applyLocalRectToNode(board, nextRect);
     });
     if (!accepted) {
@@ -1587,12 +1604,24 @@ function applyRelativeDelta(deltaMm) {
       board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness, board.orientation);
       board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId, board.orientation);
     } else {
-      next.x += deltaMm;
-      next.y += deltaMm;
+      if (board.orientation === "vertical") {
+        next.x += deltaMm;
+      } else if (board.orientation === "horizontal") {
+        next.y += deltaMm;
+      } else {
+        next.x += deltaMm;
+        next.y += deltaMm;
+      }
       board.localRect = clampLocalRect(next);
       applyPlacementMeta(board);
-      board.positionFormulas.x = formatMm(board.localRect.x);
-      board.positionFormulas.y = formatMm(board.localRect.y);
+      if (board.orientation === "vertical") {
+        board.positionFormulas.x = formatMm(board.localRect.x);
+      } else if (board.orientation === "horizontal") {
+        board.positionFormulas.y = formatMm(board.localRect.y);
+      } else {
+        board.positionFormulas.x = formatMm(board.localRect.x);
+        board.positionFormulas.y = formatMm(board.localRect.y);
+      }
     }
     applyLocalRectToNode(board, board.localRect);
   });
