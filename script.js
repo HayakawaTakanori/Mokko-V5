@@ -86,12 +86,14 @@ let cabinetLabelNode = null;
 let isDrawing = false;
 let startSnap = null;
 let currentLocalRect = null;
+let currentTraceMeta = null;
 let activeGuideLine = null;
 let guideDragStart = null;
 let guidePreviewNode = null;
 let selectedNode = null;
 let draftRect = null;
 let draftText = null;
+let draftRayLine = null;
 let lastHudOperation = "move";
 const keyBuffer = { text: "" };
 const boards = [];
@@ -641,6 +643,127 @@ function snapLocalPoint(localPoint) {
   return snapped;
 }
 
+function boundaryExprDifference(positiveExpr, negativeExpr) {
+  if (negativeExpr === "0") return `${positiveExpr}`;
+  return `(${positiveExpr}) - (${negativeExpr})`;
+}
+
+function collectExpansionBoundaries(axis, fixedCoord) {
+  const epsilon = 0.2;
+  const boundaries = [];
+  if (axis === "vertical") {
+    boundaries.push(
+      { value: 0, expr: "0", source: "parent" },
+      { value: cabinetModel.H, expr: "$H", source: "parent" }
+    );
+    boards.forEach((board) => {
+      const r = board.localRect;
+      if (fixedCoord < r.x - epsilon || fixedCoord > r.x + r.width + epsilon) return;
+      const p = board.positionFormulas;
+      boundaries.push(
+        { value: r.y, expr: p.y, source: board.id },
+        { value: r.y + r.height, expr: `(${p.y}) + (${p.h})`, source: board.id }
+      );
+    });
+  } else {
+    boundaries.push(
+      { value: 0, expr: "0", source: "parent" },
+      { value: cabinetModel.W, expr: "$W", source: "parent" }
+    );
+    boards.forEach((board) => {
+      const r = board.localRect;
+      if (fixedCoord < r.y - epsilon || fixedCoord > r.y + r.height + epsilon) return;
+      const p = board.positionFormulas;
+      boundaries.push(
+        { value: r.x, expr: p.x, source: board.id },
+        { value: r.x + r.width, expr: `(${p.x}) + (${p.w})`, source: board.id }
+      );
+    });
+  }
+  return boundaries;
+}
+
+function pickBoundaryHits(boundaries, anchor) {
+  const epsilon = 0.1;
+  let negative = null;
+  let positive = null;
+  boundaries.forEach((boundary) => {
+    if (boundary.value < anchor - epsilon) {
+      if (!negative || boundary.value > negative.value) negative = boundary;
+    }
+    if (boundary.value > anchor + epsilon) {
+      if (!positive || boundary.value < positive.value) positive = boundary;
+    }
+  });
+
+  if (!negative) {
+    boundaries.forEach((boundary) => {
+      if (boundary.value <= anchor + epsilon) {
+        if (!negative || boundary.value > negative.value) negative = boundary;
+      }
+    });
+  }
+  if (!positive) {
+    boundaries.forEach((boundary) => {
+      if (boundary.value >= anchor - epsilon) {
+        if (!positive || boundary.value < positive.value) positive = boundary;
+      }
+    });
+  }
+  return { negative, positive };
+}
+
+function expandRectByTrace(baseRect, orientation, probePoint) {
+  if (orientation === "vertical") {
+    const fixedX = clamp(baseRect.x + baseRect.width / 2, 0, cabinetModel.W);
+    const boundaries = collectExpansionBoundaries("vertical", fixedX);
+    const hits = pickBoundaryHits(boundaries, probePoint.y);
+    if (!hits.negative || !hits.positive || hits.positive.value <= hits.negative.value) {
+      return { rect: baseRect, traceMeta: null };
+    }
+    const rect = clampLocalRect({
+      x: baseRect.x,
+      y: hits.negative.value,
+      width: baseRect.width,
+      height: Math.max(MIN_DRAW_SIZE_MM, hits.positive.value - hits.negative.value),
+    });
+    return {
+      rect,
+      traceMeta: {
+        axis: "vertical",
+        fixed: fixedX,
+        negative: hits.negative,
+        positive: hits.positive,
+      },
+    };
+  }
+
+  if (orientation === "horizontal") {
+    const fixedY = clamp(baseRect.y + baseRect.height / 2, 0, cabinetModel.H);
+    const boundaries = collectExpansionBoundaries("horizontal", fixedY);
+    const hits = pickBoundaryHits(boundaries, probePoint.x);
+    if (!hits.negative || !hits.positive || hits.positive.value <= hits.negative.value) {
+      return { rect: baseRect, traceMeta: null };
+    }
+    const rect = clampLocalRect({
+      x: hits.negative.value,
+      y: baseRect.y,
+      width: Math.max(MIN_DRAW_SIZE_MM, hits.positive.value - hits.negative.value),
+      height: baseRect.height,
+    });
+    return {
+      rect,
+      traceMeta: {
+        axis: "horizontal",
+        fixed: fixedY,
+        negative: hits.negative,
+        positive: hits.positive,
+      },
+    };
+  }
+  return { rect: baseRect, traceMeta: null };
+}
+
 function toRelativeFormula(value, refValue, refExpr) {
   const d = value - refValue;
   if (Math.abs(d) < 0.001) return `${refExpr}`;
@@ -673,6 +796,120 @@ function applyTemplateThickness(localRect, start, current, templateId, orientati
     }
   }
   return clampLocalRect(out);
+}
+
+function buildBoundaryCandidates(axis, probeValue) {
+  const boundaries = [];
+  const rangeEps = 0.2;
+  const pushBoundary = (value, expr, source) => {
+    if (!Number.isFinite(value)) return;
+    boundaries.push({ value, expr, source });
+  };
+
+  if (axis === "vertical") {
+    pushBoundary(0, "0", "parent");
+    pushBoundary(cabinetModel.H, "$H", "parent");
+  } else {
+    pushBoundary(0, "0", "parent");
+    pushBoundary(cabinetModel.W, "$W", "parent");
+  }
+
+  boards.forEach((board) => {
+    const r = board.localRect;
+    const p = board.positionFormulas;
+    if (axis === "vertical") {
+      if (probeValue < r.x - rangeEps || probeValue > r.x + r.width + rangeEps) return;
+      pushBoundary(r.y, p.y, board.id);
+      pushBoundary(r.y + r.height, `(${p.y}) + (${p.h})`, board.id);
+    } else {
+      if (probeValue < r.y - rangeEps || probeValue > r.y + r.height + rangeEps) return;
+      pushBoundary(r.x, p.x, board.id);
+      pushBoundary(r.x + r.width, `(${p.x}) + (${p.w})`, board.id);
+    }
+  });
+
+  guideLines.forEach((guide) => {
+    if (axis === "vertical" && guide.orientation === "horizontal") {
+      pushBoundary(guide.value, guide.expr, guide.id);
+    }
+    if (axis === "horizontal" && guide.orientation === "vertical") {
+      pushBoundary(guide.value, guide.expr, guide.id);
+    }
+  });
+
+  return boundaries.sort((a, b) => a.value - b.value);
+}
+
+function raycastBidirectional(boundaries, seedValue) {
+  const eps = 0.05;
+  const lower = [...boundaries].reverse().find((item) => item.value < seedValue - eps);
+  const upper = boundaries.find((item) => item.value > seedValue + eps);
+
+  if (lower && upper && upper.value > lower.value) {
+    return { negative: lower, positive: upper };
+  }
+
+  const first = boundaries[0];
+  const last = boundaries[boundaries.length - 1];
+  return { negative: first, positive: last };
+}
+
+function buildTraceLengthFormula(traceMeta) {
+  if (!traceMeta) return null;
+  return `(${traceMeta.positive.expr}) - (${traceMeta.negative.expr})`;
+}
+
+function expandTracePlacement(start, current, templateId, orientationOverride) {
+  const orientation = resolveTemplateOrientation(templateId, start, current, null, orientationOverride);
+  const raw = normalizeRect(start, current);
+  const base = applyTemplateThickness(raw, start, current, templateId, orientation);
+  if (orientation !== "vertical" && orientation !== "horizontal") {
+    return { localRect: base, orientation, traceMeta: null };
+  }
+
+  if (orientation === "vertical") {
+    const probeX = clamp(base.x + base.width / 2, 0, cabinetModel.W);
+    const seedY = clamp((start.y + current.y) / 2, 0, cabinetModel.H);
+    const hits = raycastBidirectional(buildBoundaryCandidates("vertical", probeX), seedY);
+    const expanded = clampLocalRect({
+      x: base.x,
+      y: hits.negative.value,
+      width: base.width,
+      height: hits.positive.value - hits.negative.value,
+    });
+    return {
+      localRect: expanded,
+      orientation,
+      traceMeta: { axis: "vertical", probe: probeX, negative: hits.negative, positive: hits.positive },
+    };
+  }
+
+  const probeY = clamp(base.y + base.height / 2, 0, cabinetModel.H);
+  const seedX = clamp((start.x + current.x) / 2, 0, cabinetModel.W);
+  const hits = raycastBidirectional(buildBoundaryCandidates("horizontal", probeY), seedX);
+  const expanded = clampLocalRect({
+    x: hits.negative.value,
+    y: base.y,
+    width: hits.positive.value - hits.negative.value,
+    height: base.height,
+  });
+  return {
+    localRect: expanded,
+    orientation,
+    traceMeta: { axis: "horizontal", probe: probeY, negative: hits.negative, positive: hits.positive },
+  };
+}
+
+function buildTracePreviewPoints(traceMeta) {
+  if (!traceMeta) return [];
+  if (traceMeta.axis === "vertical") {
+    const p1 = localToStagePoint({ x: traceMeta.probe, y: traceMeta.negative.value });
+    const p2 = localToStagePoint({ x: traceMeta.probe, y: traceMeta.positive.value });
+    return [p1.x, p1.y, p2.x, p2.y];
+  }
+  const p1 = localToStagePoint({ x: traceMeta.negative.value, y: traceMeta.probe });
+  const p2 = localToStagePoint({ x: traceMeta.positive.value, y: traceMeta.probe });
+  return [p1.x, p1.y, p2.x, p2.y];
 }
 
 function getSideInsetMeta() {
@@ -873,11 +1110,24 @@ function buildPositionFormulas(localRect, start, end, templateId, orientationOve
   return formulas;
 }
 
-function createBoardFromDraw(localRect, start, end) {
+function createBoardFromDraw(localRect, start, end, orientationOverride, traceMetaOverride) {
   const templateId = templateSelectEl.value;
   const template = getTemplate(templateId);
   const thickness = getTemplateThickness(templateId);
-  const orientation = resolveTemplateOrientation(templateId, start, end, localRect);
+  const orientation = resolveTemplateOrientation(templateId, start, end, localRect, orientationOverride);
+  const traceLengthFormula = buildTraceLengthFormula(traceMetaOverride);
+  const finishFormulas = buildFinishFormulas(templateId, localRect, thickness, orientation);
+  const positionFormulas = buildPositionFormulas(localRect, start, end, templateId, orientation);
+  if (traceLengthFormula && orientation === "horizontal") {
+    finishFormulas.W = traceLengthFormula;
+    positionFormulas.w = traceLengthFormula;
+    positionFormulas.x = traceMetaOverride.negative.expr;
+  }
+  if (traceLengthFormula && orientation === "vertical") {
+    finishFormulas.H = traceLengthFormula;
+    positionFormulas.h = traceLengthFormula;
+    positionFormulas.y = traceMetaOverride.negative.expr;
+  }
   const board = {
     id: `part-${boardCounter}`,
     kind: "part",
@@ -894,8 +1144,9 @@ function createBoardFromDraw(localRect, start, end) {
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
     marginFormulas: { W: `${DEFAULT_MARGIN_MM}`, H: `${DEFAULT_MARGIN_MM}`, D: `${DEFAULT_MARGIN_MM}` },
     localRect,
-    finishFormulas: buildFinishFormulas(templateId, localRect, thickness, orientation),
-    positionFormulas: buildPositionFormulas(localRect, start, end, templateId, orientation),
+    traceMeta: traceMetaOverride || null,
+    finishFormulas,
+    positionFormulas,
     node: null,
   };
   applyPlacementMeta(board);
@@ -1018,15 +1269,25 @@ function continueDraw() {
   const local = stageToLocalPoint(pointer);
   const clamped = { x: clamp(local.x, 0, cabinetModel.W), y: clamp(local.y, 0, cabinetModel.H) };
   const snapped = snapLocalPoint(clamped);
-  const raw = normalizeRect(startSnap, snapped);
-  const activeOrientation = resolveTemplateOrientation(templateSelectEl.value, startSnap, snapped, raw);
-  currentLocalRect = applyTemplateThickness(raw, startSnap, snapped, templateSelectEl.value, activeOrientation);
+  const expanded = expandTracePlacement(startSnap, snapped, templateSelectEl.value);
+  currentLocalRect = expanded.localRect;
+  currentTraceMeta = expanded.traceMeta;
   const stageRect = localRectToStageRect(currentLocalRect);
 
   draftRect.position({ x: stageRect.x, y: stageRect.y });
   draftRect.size({ width: stageRect.width, height: stageRect.height });
   draftText.position({ x: stageRect.x + 2, y: stageRect.y - 18 });
   draftText.text(`W ${Math.round(currentLocalRect.width)} / H ${Math.round(currentLocalRect.height)} mm`);
+  if (!draftRayLine) {
+    draftRayLine = new Konva.Line({
+      stroke: "#0ea5e9",
+      strokeWidth: 1.5,
+      dash: [3, 3],
+      listening: false,
+    });
+    layer.add(draftRayLine);
+  }
+  draftRayLine.points(buildTracePreviewPoints(currentTraceMeta));
   layer.batchDraw();
 }
 
@@ -1042,6 +1303,8 @@ function endDraw() {
       draftRect.size({ width: 0, height: 0 });
       draftText.text("");
     }
+    if (draftRayLine) draftRayLine.points([]);
+    currentTraceMeta = null;
     layer.batchDraw();
     return;
   }
@@ -1050,7 +1313,8 @@ function endDraw() {
     x: currentLocalRect.x + currentLocalRect.width,
     y: currentLocalRect.y + currentLocalRect.height,
   });
-  const board = createBoardFromDraw(currentLocalRect, startSnap, endSnap);
+  const finalOrientation = currentTraceMeta?.axis === "vertical" ? "vertical" : currentTraceMeta?.axis === "horizontal" ? "horizontal" : null;
+  const board = createBoardFromDraw(currentLocalRect, startSnap, endSnap, finalOrientation, currentTraceMeta);
   boards.push(board);
   layer.add(board.node);
   selectBoard(board.node);
@@ -1058,6 +1322,8 @@ function endDraw() {
 
   draftRect.size({ width: 0, height: 0 });
   draftText.text("");
+  if (draftRayLine) draftRayLine.points([]);
+  currentTraceMeta = null;
   layer.batchDraw();
 }
 
