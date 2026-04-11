@@ -363,8 +363,9 @@ function inferLineOrientation(start, current) {
 function resolveTemplateOrientation(templateId, start, current, localRect, orientationOverride) {
   if (orientationOverride) return orientationOverride;
   const template = getTemplate(templateId);
-  if (template.orientation !== "auto") return template.orientation;
+  if (template.orientation === "sheet") return "sheet";
   if (start && current) return inferLineOrientation(start, current);
+  if (template.orientation !== "auto") return template.orientation;
   if (localRect) return localRect.width >= localRect.height ? "horizontal" : "vertical";
   return "horizontal";
 }
