@@ -4,8 +4,8 @@ const SNAP_DISTANCE_PX = 12;
 const DRAWING_NO_PREFIX = "WB-";
 
 const MATERIALS = {
-  ply18: { label: "合板18", thickness: 18 },
-  back5: { label: "背板5", thickness: 5 },
+  ply20Laminate: { label: "積層20", thicknessFormula: "2.5 + 15 + 2.5" },
+  back5: { label: "背板5", thicknessFormula: "5" },
 };
 
 const PART_TEMPLATES = {
@@ -13,7 +13,7 @@ const PART_TEMPLATES = {
     id: "sidePanel",
     label: "側板",
     role: "side-panel",
-    matId: "ply18",
+    matId: "ply20Laminate",
     orientation: "vertical",
     frontViewMode: "edge",
   },
@@ -21,7 +21,7 @@ const PART_TEMPLATES = {
     id: "topPanel",
     label: "天板",
     role: "top-panel",
-    matId: "ply18",
+    matId: "ply20Laminate",
     orientation: "horizontal",
     frontViewMode: "edge",
   },
@@ -29,7 +29,7 @@ const PART_TEMPLATES = {
     id: "bottomPanel",
     label: "地板",
     role: "bottom-panel",
-    matId: "ply18",
+    matId: "ply20Laminate",
     orientation: "horizontal",
     frontViewMode: "edge",
   },
@@ -37,7 +37,7 @@ const PART_TEMPLATES = {
     id: "shelfPanel",
     label: "棚板",
     role: "shelf-panel",
-    matId: "ply18",
+    matId: "ply20Laminate",
     orientation: "horizontal",
     frontViewMode: "edge",
   },
@@ -53,7 +53,7 @@ const PART_TEMPLATES = {
     id: "doorPanel",
     label: "扉",
     role: "door-panel",
-    matId: "ply18",
+    matId: "ply20Laminate",
     orientation: "sheet",
     frontViewMode: "face",
   },
@@ -61,7 +61,7 @@ const PART_TEMPLATES = {
     id: "drawerFrontPanel",
     label: "引き出し前板",
     role: "drawer-front-panel",
-    matId: "ply18",
+    matId: "ply20Laminate",
     orientation: "sheet",
     frontViewMode: "face",
   },
@@ -249,6 +249,10 @@ function evaluateFormula(formula, variables) {
   return out;
 }
 
+function normalizeDecimalComma(source) {
+  return source.replace(/(\d),(\d)/g, "$1.$2");
+}
+
 function resolveDimensionSet(formulas, variables) {
   const out = {};
   ["W", "H", "D", "T"].forEach((k) => {
@@ -328,7 +332,13 @@ function getTemplate(templateId) {
 function getTemplateThickness(templateId) {
   const template = getTemplate(templateId);
   const material = MATERIALS[template.matId];
-  return material ? material.thickness : 18;
+  const rawFormula = material?.thicknessFormula || "18";
+  const normalizedFormula = normalizeDecimalComma(rawFormula);
+  try {
+    return evaluateFormula(normalizedFormula, {});
+  } catch (error) {
+    return 18;
+  }
 }
 
 function getTemplateForDrawing() {
