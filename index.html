@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>mokko v5 MVP</title>
+    <title>2D-WoodBase Prototype</title>
     <style>
       :root {
         --bg: #f3f4f6;
@@ -50,6 +50,31 @@
         width: 100%;
         height: 100%;
         cursor: crosshair;
+      }
+
+      .hud {
+        position: absolute;
+        left: 16px;
+        top: 16px;
+        z-index: 20;
+        min-width: 250px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #bfdbfe;
+        background: rgba(239, 246, 255, 0.94);
+        font-size: 12px;
+      }
+
+      .hud strong {
+        font-size: 13px;
+      }
+
+      .hud code {
+        display: inline-flex;
+        margin-top: 4px;
+        padding: 2px 6px;
+        border-radius: 5px;
+        background: #dbeafe;
       }
 
       .sidebar {
@@ -123,25 +148,49 @@
         color: #1e3a8a;
         background: #dbeafe;
       }
+
+      .keys {
+        margin: 12px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .keys li + li {
+        margin-top: 4px;
+      }
     </style>
   </head>
   <body>
     <main class="app">
       <section class="canvas-area">
         <div class="canvas-shell">
+          <div id="hud" class="hud">
+            <strong>Relative Input HUD</strong><br />
+            移動中/リサイズ後に <code>+30</code> や <code>-3</code> を入力し Enter で反映
+            <div id="hud-state"></div>
+          </div>
           <div id="stage-container"></div>
         </div>
       </section>
       <aside class="sidebar">
-        <h1>mokko v5 / パーツリスト</h1>
+        <h1>2D-WoodBase / パーツリスト</h1>
         <p>
-          キャンバス上をドラッグして家具外径を作図します。外径確定と同時に側板（18mm）を自動配置します。
+          ドラッグで板材を作図。縦ドラッグは垂直部材、横ドラッグは水平部材として登録されます。既存辺と
+          1/2, 1/3 分割点へスナップし、相対数式を保存します。
         </p>
-        <p class="meta">伸び寸法（初期値）: <strong>10mm</strong></p>
+        <p class="meta">標準: 仕上がり寸法 + 伸び 15mm = 発注寸法</p>
         <div id="parts-list" class="parts-list">
-          <div class="empty">まだ部材がありません。左のキャンバスで家具外径を描画してください。</div>
+          <div class="empty">まだ部材がありません。左のキャンバスで矩形を描画してください。</div>
         </div>
-        <span class="badge">直感操作優先 MVP</span>
+        <span class="badge">Shapr3D/SketchUp ライク試作</span>
+        <ul class="keys">
+          <li>ドラッグ: 新規板作成（自動スナップ）</li>
+          <li>クリック: 板を選択、ドラッグで移動</li>
+          <li>角ハンドル: リサイズ</li>
+          <li>キー入力: <code>+30</code>, <code>-5</code>, Enter で相対調整</li>
+        </ul>
       </aside>
     </main>
 

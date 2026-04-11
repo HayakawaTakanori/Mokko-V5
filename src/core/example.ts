@@ -1,5 +1,5 @@
-import { resolveComponentDimensions } from "./dimensionResolver";
-import type { FlatComponent, FormulaScope } from "./types";
+import { resolvePartDimensions } from "./dimensionResolver";
+import type { ComponentRecord, FormulaScope, PartRecord } from "./types";
 
 const cabinetRootScope: FormulaScope = {
   variables: {
@@ -10,11 +10,25 @@ const cabinetRootScope: FormulaScope = {
   },
 };
 
-const leftSidePanel: FlatComponent = {
+const cabinet: ComponentRecord = {
+  id: "cabinet-001",
+  name: "箱本体",
+  kind: "component",
+  variables: {
+    W: 900,
+    H: 720,
+    D: 450,
+    T: 18,
+  },
+};
+
+const leftSidePanel: PartRecord = {
   id: "part-left-side",
   name: "左側板",
-  kind: "part",
-  parentId: "cabinet-001",
+  parentId: cabinet.id,
+  role: "side-left",
+  matId: "ply18",
+  drawingNo: "WB-0001",
   finishFormulas: {
     W: "$T",
     H: "$H",
@@ -25,7 +39,13 @@ const leftSidePanel: FlatComponent = {
     H: "10",
     D: "10",
   },
+  positionFormulas: {
+    x: "0",
+    y: "0",
+    w: "$T",
+    h: "$H",
+  },
 };
 
-const resolved = resolveComponentDimensions(leftSidePanel, cabinetRootScope);
+const resolved = resolvePartDimensions(leftSidePanel, cabinetRootScope);
 console.log(resolved);

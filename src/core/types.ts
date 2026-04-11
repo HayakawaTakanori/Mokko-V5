@@ -9,32 +9,43 @@ export interface FormulaDimensionSet {
   T?: string | number;
 }
 
-export interface FlatComponent {
-  /**
-   * Stable unique id for references.
-   */
+export interface PositionFormulaSet {
+  x?: string | number;
+  y?: string | number;
+  w?: string | number;
+  h?: string | number;
+}
+
+export interface ComponentRecord {
   id: string;
+  kind: "component";
   name: string;
-  kind: "assembly" | "part";
   parentId: string | null;
-
-  /**
-   * Finish size (仕上がり寸法) formulas.
-   * Every expression should reference parent variables ($W, $H, $D, $T).
-   */
-  finishFormulas: FormulaDimensionSet;
-
-  /**
-   * Margin (伸び寸法) formulas for quotation/procurement.
-   * Kept separate from finishFormulas by design.
-   */
-  marginFormulas: FormulaDimensionSet;
-
-  /**
-   * Optional local constants for this component (e.g. SIDE_T = 18).
-   */
+  drawingNo?: string;
+  variables: Partial<Record<DimensionKey, number>>;
+  finishFormulas?: FormulaDimensionSet;
+  marginFormulas?: FormulaDimensionSet;
+  positionFormulas?: PositionFormulaSet;
   localVariables?: ScalarVariables;
 }
+
+export interface PartRecord {
+  id: string;
+  parentId: string;
+  kind: "part";
+  name: string;
+  role: string;
+  matId: string;
+  drawingNo: string;
+  finishFormulas: FormulaDimensionSet;
+  marginFormulas: FormulaDimensionSet;
+  positionFormulas?: PositionFormulaSet;
+  localVariables?: ScalarVariables;
+}
+
+export type FlatRecord = ComponentRecord | PartRecord;
+export type FlatComponent = ComponentRecord;
+export type FlatPart = PartRecord;
 
 export interface FormulaScope {
   /**

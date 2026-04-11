@@ -1,9 +1,10 @@
 import { evaluateFormula } from "./formulaEvaluator";
 import type {
+  ComponentRecord,
   DimensionKey,
-  FlatComponent,
   FormulaDimensionSet,
   FormulaScope,
+  PartRecord,
   ResolvedDimensions,
   ScalarVariables,
 } from "./types";
@@ -11,10 +12,11 @@ import type {
 const DIMENSION_KEYS: DimensionKey[] = ["W", "H", "D", "T"];
 
 function resolveDimensionSet(
-  formulas: FormulaDimensionSet,
+  formulas: FormulaDimensionSet | undefined,
   variables: ScalarVariables
 ): Partial<Record<DimensionKey, number>> {
   const out: Partial<Record<DimensionKey, number>> = {};
+  if (!formulas) return out;
   DIMENSION_KEYS.forEach((key) => {
     const source = formulas[key];
     if (source === undefined) return;
@@ -27,7 +29,7 @@ function resolveDimensionSet(
  * Resolve finish/margin/order dimensions while keeping finish and margin separated.
  */
 export function resolveComponentDimensions(
-  component: FlatComponent,
+  component: ComponentRecord | PartRecord,
   scope: FormulaScope
 ): ResolvedDimensions {
   const mergedVariables: ScalarVariables = {
@@ -47,4 +49,8 @@ export function resolveComponentDimensions(
   });
 
   return { finish, margin, order };
+}
+
+export function resolvePartDimensions(part: PartRecord, scope: FormulaScope): ResolvedDimensions {
+  return resolveComponentDimensions(part, scope);
 }
