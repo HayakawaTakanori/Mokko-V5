@@ -258,6 +258,15 @@
             </select>
           </label>
         </div>
+        <div class="controls">
+          <label>
+            操作モード
+            <select id="draw-mode-select">
+              <option value="part">部材配置モード</option>
+              <option value="guide">補助線モード</option>
+            </select>
+          </label>
+        </div>
         <p>先に外寸で正面枠を描き、その中へテンプレート部材をドラッグ配置します。</p>
         <p class="meta">標準は厚み表示。例外は 扉・引き出し前板・背板を面表示で扱います。</p>
         <div id="parts-list" class="parts-list">
@@ -273,6 +282,7 @@
         <ul class="keys">
           <li>外寸入力 + ボタン: キャビネット外形作成</li>
           <li>テンプレート選択: 板構成ルール切替</li>
+          <li>補助線モード: 辺を掴んで離すと平行補助線を作成</li>
           <li>ドラッグ: 新規板作成（板厚自動 + 自動スナップ）</li>
           <li>クリック: 板を選択、ドラッグで移動</li>
           <li>角ハンドル: リサイズ</li>

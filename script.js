@@ -76,6 +76,7 @@ const cabinetWidthEl = document.getElementById("cabinet-width");
 const cabinetHeightEl = document.getElementById("cabinet-height");
 const cabinetDepthEl = document.getElementById("cabinet-depth");
 const applyCabinetBtn = document.getElementById("apply-cabinet-btn");
+const modeSelectEl = document.getElementById("draw-mode-select");
 
 let stage;
 let layer;
@@ -85,12 +86,17 @@ let cabinetLabelNode = null;
 let isDrawing = false;
 let startSnap = null;
 let currentLocalRect = null;
+let activeGuideLine = null;
+let guideDragStart = null;
+let guidePreviewNode = null;
 let selectedNode = null;
 let draftRect = null;
 let draftText = null;
 let lastHudOperation = "move";
 const keyBuffer = { text: "" };
 const boards = [];
+const guideLines = [];
+let guideCounter = 1;
 let boardCounter = 1;
 
 const cabinetModel = {
@@ -361,6 +367,128 @@ function resolveTemplateOrientation(templateId, start, current, localRect, orien
   return "horizontal";
 }
 
+function getCurrentMode() {
+  return modeSelectEl?.value === "guide" ? "guide" : "part";
+}
+
+function createGuideLineNode(guide) {
+  const points =
+    guide.orientation === "vertical"
+      ? [localToStagePoint({ x: guide.value, y: 0 }).x, localToStagePoint({ x: 0, y: 0 }).y, localToStagePoint({ x: guide.value, y: cabinetModel.H }).x, localToStagePoint({ x: 0, y: cabinetModel.H }).y]
+      : [localToStagePoint({ x: 0, y: guide.value }).x, localToStagePoint({ x: 0, y: 0 }).y, localToStagePoint({ x: cabinetModel.W, y: guide.value }).x, localToStagePoint({ x: cabinetModel.W, y: 0 }).y];
+  const line = new Konva.Line({
+    points,
+    stroke: "#6366f1",
+    strokeWidth: 1.5,
+    dash: [6, 4],
+    listening: false,
+    name: "guide-line",
+  });
+  return line;
+}
+
+function updateGuideLineNode(guide) {
+  if (!guide.node) return;
+  const points =
+    guide.orientation === "vertical"
+      ? [localToStagePoint({ x: guide.value, y: 0 }).x, localToStagePoint({ x: 0, y: 0 }).y, localToStagePoint({ x: guide.value, y: cabinetModel.H }).x, localToStagePoint({ x: 0, y: cabinetModel.H }).y]
+      : [localToStagePoint({ x: 0, y: guide.value }).x, localToStagePoint({ x: 0, y: 0 }).y, localToStagePoint({ x: cabinetModel.W, y: guide.value }).x, localToStagePoint({ x: cabinetModel.W, y: 0 }).y];
+  guide.node.points(points);
+}
+
+function clearGuides() {
+  guideLines.forEach((guide) => {
+    if (guide.node) guide.node.destroy();
+  });
+  guideLines.length = 0;
+  if (guidePreviewNode) {
+    guidePreviewNode.destroy();
+    guidePreviewNode = null;
+  }
+}
+
+function getEdgeCandidates(localPoint) {
+  const edges = [];
+  const rects = [{ x: 0, y: 0, width: cabinetModel.W, height: cabinetModel.H }, ...boards.map((b) => b.localRect)];
+  rects.forEach((rect) => {
+    edges.push({ orientation: "vertical", value: rect.x });
+    edges.push({ orientation: "vertical", value: rect.x + rect.width });
+    edges.push({ orientation: "horizontal", value: rect.y });
+    edges.push({ orientation: "horizontal", value: rect.y + rect.height });
+  });
+  const tolerance = pxToMm(SNAP_DISTANCE_PX) * 1.5;
+  let best = null;
+  edges.forEach((edge) => {
+    const distance = edge.orientation === "vertical" ? Math.abs(localPoint.x - edge.value) : Math.abs(localPoint.y - edge.value);
+    if (distance > tolerance) return;
+    if (!best || distance < best.distance) best = { ...edge, distance };
+  });
+  return best;
+}
+
+function beginGuideDraw() {
+  const pointer = stage.getPointerPosition();
+  if (!pointer) return;
+  const local = stageToLocalPoint(pointer);
+  if (local.x < 0 || local.y < 0 || local.x > cabinetModel.W || local.y > cabinetModel.H) return;
+  const edge = getEdgeCandidates(local);
+  if (!edge) return;
+  guideDragStart = edge;
+  if (!guidePreviewNode) {
+    guidePreviewNode = new Konva.Line({
+      stroke: "#4f46e5",
+      strokeWidth: 1.5,
+      dash: [4, 3],
+      listening: false,
+      opacity: 0.75,
+    });
+    layer.add(guidePreviewNode);
+  }
+}
+
+function continueGuideDraw() {
+  if (!guideDragStart || !guidePreviewNode) return;
+  const pointer = stage.getPointerPosition();
+  if (!pointer) return;
+  const local = stageToLocalPoint(pointer);
+  const value = guideDragStart.orientation === "vertical" ? clamp(local.x, 0, cabinetModel.W) : clamp(local.y, 0, cabinetModel.H);
+  const guide = { orientation: guideDragStart.orientation, value };
+  const tempNode = { points: () => {} };
+  guide.node = tempNode;
+  const points =
+    guide.orientation === "vertical"
+      ? [localToStagePoint({ x: guide.value, y: 0 }).x, localToStagePoint({ x: 0, y: 0 }).y, localToStagePoint({ x: guide.value, y: cabinetModel.H }).x, localToStagePoint({ x: 0, y: cabinetModel.H }).y]
+      : [localToStagePoint({ x: 0, y: guide.value }).x, localToStagePoint({ x: 0, y: 0 }).y, localToStagePoint({ x: cabinetModel.W, y: guide.value }).x, localToStagePoint({ x: cabinetModel.W, y: 0 }).y];
+  guidePreviewNode.points(points);
+  layer.batchDraw();
+}
+
+function endGuideDraw() {
+  if (!guideDragStart) return;
+  const pointer = stage.getPointerPosition();
+  if (!pointer) {
+    guideDragStart = null;
+    return;
+  }
+  const local = stageToLocalPoint(pointer);
+  const value = guideDragStart.orientation === "vertical" ? clamp(local.x, 0, cabinetModel.W) : clamp(local.y, 0, cabinetModel.H);
+  const guide = {
+    id: `guide-${guideLines.length + 1}`,
+    orientation: guideDragStart.orientation,
+    value,
+    expr: formatMm(value),
+    node: null,
+  };
+  guide.node = createGuideLineNode(guide);
+  guideLines.push(guide);
+  layer.add(guide.node);
+  if (guidePreviewNode) {
+    guidePreviewNode.points([]);
+  }
+  guideDragStart = null;
+  layer.batchDraw();
+}
+
 function clearBoards() {
   boards.forEach((board) => board.node.destroy());
   boards.length = 0;
@@ -414,6 +542,7 @@ function drawCabinetFrame(resetBoards) {
   } else {
     boards.forEach((board) => applyLocalRectToNode(board, board.localRect));
   }
+  guideLines.forEach((guide) => updateGuideLineNode(guide));
   cabinetFrameNode.moveToBottom();
   layer.batchDraw();
 }
@@ -458,6 +587,14 @@ function buildSnapCandidatesLocal() {
       { value: r.y + r.height, expr: `(${p.y}) + (${p.h})` },
       { value: r.y + r.height / 2, expr: `(${p.y}) + ((${p.h}) / 2)` }
     );
+  });
+
+  guideLines.forEach((guide) => {
+    if (guide.orientation === "vertical") {
+      x.push({ value: guide.value, expr: guide.expr });
+    } else {
+      y.push({ value: guide.value, expr: guide.expr });
+    }
   });
   return { x, y };
 }
@@ -837,6 +974,10 @@ function refreshHud() {
 }
 
 function beginDraw(event) {
+  if (getCurrentMode() === "guide") {
+    beginGuideDraw();
+    return;
+  }
   if (event.target && event.target !== stage && event.target !== cabinetFrameNode) return;
   const pointer = stage.getPointerPosition();
   if (!pointer) return;
@@ -867,6 +1008,10 @@ function beginDraw(event) {
 }
 
 function continueDraw() {
+  if (getCurrentMode() === "guide") {
+    continueGuideDraw();
+    return;
+  }
   if (!isDrawing || !startSnap) return;
   const pointer = stage.getPointerPosition();
   if (!pointer) return;
@@ -886,6 +1031,10 @@ function continueDraw() {
 }
 
 function endDraw() {
+  if (getCurrentMode() === "guide") {
+    endGuideDraw();
+    return;
+  }
   if (!isDrawing) return;
   isDrawing = false;
   if (!currentLocalRect || currentLocalRect.width < MIN_DRAW_SIZE_MM || currentLocalRect.height < MIN_DRAW_SIZE_MM) {
@@ -1008,6 +1157,17 @@ function initStage() {
   });
 
   applyCabinetBtn.addEventListener("click", () => drawCabinetFrame(true));
+  modeSelectEl.addEventListener("change", () => {
+    isDrawing = false;
+    guideDragStart = null;
+    if (guidePreviewNode) {
+      guidePreviewNode.points([]);
+    }
+    selectedNode = null;
+    tr.nodes([]);
+    refreshHud();
+    layer.batchDraw();
+  });
   window.addEventListener("keydown", handleKeyboardInput);
   window.addEventListener("resize", () => {
     stage.width(stageContainer.clientWidth);
