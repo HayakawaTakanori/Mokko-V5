@@ -356,6 +356,60 @@ function runWithPropagationGuard(sourceBoardId, mutateFn) {
   return true;
 }
 
+function evaluateBoardFormula(formula, board, fallback) {
+  if (formula === undefined || formula === null || formula === "") return fallback;
+  try {
+    return evaluateFormula(formula, {
+      $W: cabinetModel.W,
+      $H: cabinetModel.H,
+      $D: cabinetModel.D,
+      $T: board.thickness,
+    });
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function resolveBoardRectFromFormulas(board) {
+  const fromFormulas = {
+    x: evaluateBoardFormula(board.positionFormulas?.x, board, board.localRect.x),
+    y: evaluateBoardFormula(board.positionFormulas?.y, board, board.localRect.y),
+    width: evaluateBoardFormula(board.positionFormulas?.w, board, board.localRect.width),
+    height: evaluateBoardFormula(board.positionFormulas?.h, board, board.localRect.height),
+  };
+  if (board.orientation === "vertical") {
+    fromFormulas.width = board.thickness;
+  } else if (board.orientation === "horizontal") {
+    fromFormulas.height = board.thickness;
+  }
+  return clampLocalRect(fromFormulas);
+}
+
+function recalcBoardsAfterParentResize() {
+  const snapshot = snapshotBoardsState();
+  boards.forEach((board) => {
+    board.localRect = resolveBoardRectFromFormulas(board);
+    applyPlacementMeta(board);
+    applyLocalRectToNode(board, board.localRect);
+  });
+
+  for (let pass = 0; pass < Math.max(1, boards.length); pass += 1) {
+    let changedInPass = false;
+    boards.forEach((board) => {
+      if (!board.traceMeta) return;
+      const changed = recalcTraceLinkedBoard(board);
+      if (changed) changedInPass = true;
+    });
+    if (!changedInPass) break;
+  }
+
+  if (hasAnyBoardOverlap()) {
+    restoreBoardsState(snapshot);
+    return false;
+  }
+  return true;
+}
+
 function normalizeRect(a, b) {
   return {
     x: Math.min(a.x, b.x),
@@ -626,7 +680,17 @@ function drawCabinetFrame(resetBoards) {
   if (resetBoards) {
     clearBoards();
   } else {
-    boards.forEach((board) => applyLocalRectToNode(board, board.localRect));
+    boards.forEach((board) => {
+      if (board.traceMeta) {
+        recalcTraceLinkedBoard(board);
+      } else {
+        board.localRect = resolveBoardRectFromFormulas(board);
+      }
+      applyPlacementMeta(board);
+      applyLocalRectToNode(board, board.localRect);
+    });
+    const baseBoards = boards.filter((board) => !board.traceMeta);
+    baseBoards.forEach((board) => propagateLinkedBoardsFrom(board.id));
   }
   guideLines.forEach((guide) => updateGuideLineNode(guide));
   cabinetFrameNode.moveToBottom();
