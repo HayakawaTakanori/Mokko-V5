@@ -2,6 +2,52 @@ const DEFAULT_MARGIN_MM = 15;
 const MIN_DRAW_SIZE = 20;
 const SNAP_DISTANCE = 12;
 const DRAWING_NO_PREFIX = "WB-";
+const PART_TEMPLATES = {
+  "vertical-member": {
+    id: "vertical-member",
+    label: "縦部材",
+    role: "vertical-member",
+    matId: "ply18-v",
+    finishFormulas: {
+      W: "$T",
+      H: "$H",
+      D: "$D",
+    },
+    marginFormulas: {
+      W: `${DEFAULT_MARGIN_MM}`,
+      H: `${DEFAULT_MARGIN_MM}`,
+      D: `${DEFAULT_MARGIN_MM}`,
+    },
+    defaultPositionFormulas: {
+      x: "0",
+      y: "0",
+      w: "$T",
+      h: "$H",
+    },
+  },
+  "horizontal-member": {
+    id: "horizontal-member",
+    label: "横部材",
+    role: "horizontal-member",
+    matId: "ply18-h",
+    finishFormulas: {
+      W: "$W",
+      H: "$T",
+      D: "$D",
+    },
+    marginFormulas: {
+      W: `${DEFAULT_MARGIN_MM}`,
+      H: `${DEFAULT_MARGIN_MM}`,
+      D: `${DEFAULT_MARGIN_MM}`,
+    },
+    defaultPositionFormulas: {
+      x: "0",
+      y: "0",
+      w: "$W",
+      h: "$T",
+    },
+  },
+};
 
 const stageContainer = document.getElementById("stage-container");
 const partsListEl = document.getElementById("parts-list");
@@ -327,6 +373,20 @@ function detectRole(rect) {
   return rect.height >= rect.width ? "vertical-member" : "horizontal-member";
 }
 
+function buildRuntimePartFromTemplate(templateId, overrides) {
+  const template = PART_TEMPLATES[templateId] || PART_TEMPLATES["horizontal-member"];
+  return {
+    kind: "part",
+    name: template.label,
+    role: template.role,
+    matId: template.matId,
+    finishFormulas: { ...template.finishFormulas },
+    marginFormulas: { ...template.marginFormulas },
+    positionFormulas: template.defaultPositionFormulas ? { ...template.defaultPositionFormulas } : {},
+    ...overrides,
+  };
+}
+
 function createBoardNode(rect, role) {
   const node = new Konva.Rect({
     x: rect.x,
@@ -366,22 +426,10 @@ function createBoardNode(rect, role) {
 
 function createBoardData(node, rect, role, startSnap, endSnap) {
   const rootVars = createRootVariables(rect);
-  const part = {
+  const part = buildRuntimePartFromTemplate(role, {
     id: `part-${boardCounter}`,
-    role,
-    matId: role === "vertical-member" ? "ply18-v" : "ply18-h",
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
     parentId: "component-root-1",
-    finishFormulas: {
-      W: role === "vertical-member" ? "$T" : "$W",
-      H: role === "vertical-member" ? "$H" : "$T",
-      D: "$D",
-    },
-    marginFormulas: {
-      W: `${DEFAULT_MARGIN_MM}`,
-      H: `${DEFAULT_MARGIN_MM}`,
-      D: `${DEFAULT_MARGIN_MM}`,
-    },
     positionFormulas: {
       x: startSnap.snappedX
         ? toRelativeFormula(rect.x, startSnap.refXValue, startSnap.refXExpr)
@@ -400,7 +448,7 @@ function createBoardData(node, rect, role, startSnap, endSnap) {
     },
     rootVars,
     node,
-  };
+  });
   boardCounter += 1;
   return part;
 }

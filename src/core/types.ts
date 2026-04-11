@@ -16,6 +16,17 @@ export interface PositionFormulaSet {
   h?: string | number;
 }
 
+export interface PartTemplate {
+  id: string;
+  label: string;
+  role: string;
+  matId: string;
+  description?: string;
+  finishFormulas: FormulaDimensionSet;
+  marginFormulas: FormulaDimensionSet;
+  defaultPositionFormulas?: PositionFormulaSet;
+}
+
 export interface ComponentRecord {
   id: string;
   kind: "component";

@@ -1,4 +1,5 @@
 import { resolvePartDimensions } from "./dimensionResolver";
+import { buildPartFromTemplate } from "./partTemplates";
 import type { ComponentRecord, FormulaScope, PartRecord } from "./types";
 
 const cabinetRootScope: FormulaScope = {
@@ -49,3 +50,13 @@ const leftSidePanel: PartRecord = {
 
 const resolved = resolvePartDimensions(leftSidePanel, cabinetRootScope);
 console.log(resolved);
+
+const topPanelFromTemplate = buildPartFromTemplate({
+  templateId: "topPanel",
+  id: "part-top-001",
+  parentId: cabinet.id,
+  drawingNo: "WB-0002",
+});
+
+const resolvedTop = resolvePartDimensions(topPanelFromTemplate, cabinetRootScope);
+console.log(resolvedTop);
