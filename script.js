@@ -770,10 +770,6 @@ function extendBoardTowardOpponentByLength(board, opponent) {
   }
 
   board.localRect = clampLocalRect(next);
-  board.growthOrigin = {
-    x: board.localRect.x + board.localRect.width / 2,
-    y: board.localRect.y + board.localRect.height / 2,
-  };
   board.hitTargetIds = normalizeHitTargetIds(board).filter((id) => id !== opponent.id);
   syncBoardFormulasFromRect(board);
   applyPlacementMeta(board);
@@ -785,14 +781,14 @@ function setLoserGrowthOriginFromZeroToCollision(winner, loser) {
   if (!winner || !loser) return false;
   const axis = loser.orientation === "vertical" ? "vertical" : loser.orientation === "horizontal" ? "horizontal" : null;
   if (!axis) return false;
-  const intersection = getPairIntersectionRect(winner, loser);
+  const resetRect = { ...loser.localRect };
   if (axis === "horizontal") {
-    const collisionY = clamp((intersection.top + intersection.bottom) / 2, 0, cabinetModel.H);
-    loser.growthOrigin = { x: 0.1, y: collisionY };
+    resetRect.x = 0;
   } else {
-    const collisionX = clamp((intersection.left + intersection.right) / 2, 0, cabinetModel.W);
-    loser.growthOrigin = { x: collisionX, y: 0.1 };
+    resetRect.y = 0;
   }
+  loser.localRect = clampBoardRectByOrientation(loser, resetRect);
+  syncBoardFormulasFromRect(loser);
   loser.hitTargetIds = [...new Set([...(normalizeHitTargetIds(loser) || []), winner.id])];
   loser.traceMeta = null;
   return true;
@@ -849,7 +845,6 @@ function splitTargetByPasser(targetBoard, passerBoard) {
     finishFormulas: { ...targetBoard.finishFormulas },
     traceMeta: null,
     hitTargetIds: [...inheritedDeps],
-    growthOrigin: targetBoard.growthOrigin ? { ...targetBoard.growthOrigin } : null,
     node: null,
   };
   const segB = {
@@ -861,7 +856,6 @@ function splitTargetByPasser(targetBoard, passerBoard) {
     finishFormulas: { ...targetBoard.finishFormulas },
     traceMeta: null,
     hitTargetIds: [...inheritedDeps],
-    growthOrigin: targetBoard.growthOrigin ? { ...targetBoard.growthOrigin } : null,
     node: null,
   };
 
@@ -878,14 +872,6 @@ function splitTargetByPasser(targetBoard, passerBoard) {
     segB.positionFormulas.w = `((${targetBoard.positionFormulas.x}) + (${targetBoard.positionFormulas.w})) - ((${passerBoard.positionFormulas.x}) + (${passerBoard.positionFormulas.w}))`;
     segA.finishFormulas.W = formatMm(segA.localRect.width);
     segB.finishFormulas.W = formatMm(segB.localRect.width);
-    segA.growthOrigin = {
-      x: segA.localRect.x + segA.localRect.width / 2,
-      y: segA.localRect.y + segA.localRect.height / 2,
-    };
-    segB.growthOrigin = {
-      x: segB.localRect.x + segB.localRect.width / 2,
-      y: segB.localRect.y + segB.localRect.height / 2,
-    };
   } else {
     const cutMin = passerBoard.localRect.y;
     const cutMax = passerBoard.localRect.y + passerBoard.localRect.height;
@@ -899,14 +885,6 @@ function splitTargetByPasser(targetBoard, passerBoard) {
     segB.positionFormulas.h = `((${targetBoard.positionFormulas.y}) + (${targetBoard.positionFormulas.h})) - ((${passerBoard.positionFormulas.y}) + (${passerBoard.positionFormulas.h}))`;
     segA.finishFormulas.H = formatMm(segA.localRect.height);
     segB.finishFormulas.H = formatMm(segB.localRect.height);
-    segA.growthOrigin = {
-      x: segA.localRect.x + segA.localRect.width / 2,
-      y: segA.localRect.y + segA.localRect.height / 2,
-    };
-    segB.growthOrigin = {
-      x: segB.localRect.x + segB.localRect.width / 2,
-      y: segB.localRect.y + segB.localRect.height / 2,
-    };
   }
 
   targetBoard.node?.destroy();
@@ -951,10 +929,6 @@ function tryMergeAdjacentBoards() {
         left.positionFormulas.w = formatMm(left.localRect.width);
         left.finishFormulas.W = formatMm(left.localRect.width);
         left.hitTargetIds = [...new Set([...(left.hitTargetIds || []), ...(right.hitTargetIds || [])])];
-        left.growthOrigin = {
-          x: left.localRect.x + left.localRect.width / 2,
-          y: left.localRect.y + left.localRect.height / 2,
-        };
         right.node?.destroy();
         boards.splice(boards.indexOf(right), 1);
         return true;
@@ -976,10 +950,6 @@ function tryMergeAdjacentBoards() {
       top.positionFormulas.h = formatMm(top.localRect.height);
       top.finishFormulas.H = formatMm(top.localRect.height);
       top.hitTargetIds = [...new Set([...(top.hitTargetIds || []), ...(bottom.hitTargetIds || [])])];
-      top.growthOrigin = {
-        x: top.localRect.x + top.localRect.width / 2,
-        y: top.localRect.y + top.localRect.height / 2,
-      };
       bottom.node?.destroy();
       boards.splice(boards.indexOf(bottom), 1);
       return true;
@@ -1240,7 +1210,6 @@ function snapshotBoardsState() {
       localRect: { ...board.localRect },
       finishFormulas: { ...board.finishFormulas },
       positionFormulas: { ...board.positionFormulas },
-      growthOrigin: board.growthOrigin ? { ...board.growthOrigin } : null,
       hitTargetIds: Array.isArray(board.hitTargetIds) ? [...board.hitTargetIds] : [],
       placementSide: board.placementSide,
       isMirrored: board.isMirrored,
@@ -1261,7 +1230,6 @@ function restoreBoardsState(snapshot) {
     board.localRect = { ...saved.localRect };
     board.finishFormulas = { ...saved.finishFormulas };
     board.positionFormulas = { ...saved.positionFormulas };
-    board.growthOrigin = saved.growthOrigin ? { ...saved.growthOrigin } : board.growthOrigin;
     board.hitTargetIds = Array.isArray(saved.hitTargetIds) ? [...saved.hitTargetIds] : [];
     board.placementSide = saved.placementSide;
     board.isMirrored = saved.isMirrored;
@@ -1334,7 +1302,7 @@ function getBoardTracePlacementByIndex(board, index) {
 }
 
 function buildPhysicalGrowthRect(board, index) {
-  const origin = board.growthOrigin || {
+  const origin = {
     x: board.localRect.x + board.localRect.width / 2,
     y: board.localRect.y + board.localRect.height / 2,
   };
@@ -1485,10 +1453,6 @@ function applyCabinetResizeTransform(previousCabinet) {
     }
 
     board.localRect = clampBoardRectByOrientation(board, nextRect);
-    board.growthOrigin = {
-      x: board.localRect.x + board.localRect.width / 2,
-      y: board.localRect.y + board.localRect.height / 2,
-    };
     applyPlacementMeta(board);
     applyLocalRectToNode(board, board.localRect);
   });
@@ -1746,10 +1710,6 @@ function moveBoardBySectionPlane(board, axis, plane, delta, sideMode, uniform) {
     }
   }
   board.localRect = clampBoardRectByOrientation(board, rect);
-  board.growthOrigin = {
-    x: board.localRect.x + board.localRect.width / 2,
-    y: board.localRect.y + board.localRect.height / 2,
-  };
   syncBoardFormulasFromRect(board);
   applyPlacementMeta(board);
   applyLocalRectToNode(board, board.localRect);
@@ -2594,10 +2554,6 @@ function createBoardNode(board) {
         board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
         board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
       }
-      board.growthOrigin = {
-        x: nextRect.x + nextRect.width / 2,
-        y: nextRect.y + nextRect.height / 2,
-      };
       applyLocalRectToNode(board, nextRect);
     });
     if (!accepted) {
@@ -2629,10 +2585,6 @@ function createBoardNode(board) {
       applyPlacementMeta(board);
       board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness, board.orientation);
       board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId, board.orientation);
-      board.growthOrigin = {
-        x: nextRect.x + nextRect.width / 2,
-        y: nextRect.y + nextRect.height / 2,
-      };
       applyLocalRectToNode(board, nextRect);
     });
     if (!accepted) {
@@ -2760,7 +2712,6 @@ function createBoardFromDraw(localRect, start, end, orientationOverride, traceMe
     thickness,
     clearanceX: fabricationPolicy.defaultClearanceX,
     clearanceY: fabricationPolicy.defaultClearanceY,
-    growthOrigin: { x: localRect.x + localRect.width / 2, y: localRect.y + localRect.height / 2 },
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
     marginFormulas: { W: `${DEFAULT_MARGIN_MM}`, H: `${DEFAULT_MARGIN_MM}`, D: `${DEFAULT_MARGIN_MM}` },
     localRect,
@@ -3014,10 +2965,6 @@ function applyRelativeDelta(deltaMm) {
       const thickened = applyTemplateThickness(next, next, next, board.templateId, board.orientation);
       board.localRect = thickened;
       applyPlacementMeta(board);
-      board.growthOrigin = {
-        x: thickened.x + thickened.width / 2,
-        y: thickened.y + thickened.height / 2,
-      };
       board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness, board.orientation);
       board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId, board.orientation);
     } else {
@@ -3031,10 +2978,6 @@ function applyRelativeDelta(deltaMm) {
       }
       board.localRect = clampLocalRect(next);
       applyPlacementMeta(board);
-      board.growthOrigin = {
-        x: board.localRect.x + board.localRect.width / 2,
-        y: board.localRect.y + board.localRect.height / 2,
-      };
       if (board.orientation === "vertical") {
         board.positionFormulas.x = formatMm(board.localRect.x);
       } else if (board.orientation === "horizontal") {
