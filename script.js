@@ -708,6 +708,83 @@ function applyWinnerAgainstBoard(winner, loser) {
   return true;
 }
 
+function syncBoardFormulasFromRect(board) {
+  if (!board) return;
+  if (board.orientation === "vertical") {
+    board.positionFormulas.x = formatMm(board.localRect.x);
+    board.positionFormulas.y = formatMm(board.localRect.y);
+    board.positionFormulas.h = formatMm(board.localRect.height);
+    board.finishFormulas.H = formatMm(board.localRect.height);
+    board.finishFormulas.W = formatMm(board.thickness);
+  } else if (board.orientation === "horizontal") {
+    board.positionFormulas.x = formatMm(board.localRect.x);
+    board.positionFormulas.y = formatMm(board.localRect.y);
+    board.positionFormulas.w = formatMm(board.localRect.width);
+    board.finishFormulas.W = formatMm(board.localRect.width);
+    board.finishFormulas.H = formatMm(board.thickness);
+  }
+}
+
+function extendBoardTowardOpponentByLength(board, opponent) {
+  if (!board || !opponent) return false;
+  const axis = board.orientation === "vertical" ? "vertical" : board.orientation === "horizontal" ? "horizontal" : null;
+  if (!axis) return false;
+
+  const extendLength = Math.max(MIN_DRAW_SIZE_MM, getActualLengthMm(opponent));
+  const next = { ...board.localRect };
+  if (axis === "horizontal") {
+    const boardMid = board.localRect.x + board.localRect.width / 2;
+    const opponentMid = opponent.localRect.x + opponent.localRect.width / 2;
+    if (opponentMid < boardMid) {
+      const delta = Math.min(extendLength, next.x);
+      next.x -= delta;
+      next.width += delta;
+    } else {
+      const delta = Math.min(extendLength, cabinetModel.W - (next.x + next.width));
+      next.width += delta;
+    }
+  } else {
+    const boardMid = board.localRect.y + board.localRect.height / 2;
+    const opponentMid = opponent.localRect.y + opponent.localRect.height / 2;
+    if (opponentMid < boardMid) {
+      const delta = Math.min(extendLength, next.y);
+      next.y -= delta;
+      next.height += delta;
+    } else {
+      const delta = Math.min(extendLength, cabinetModel.H - (next.y + next.height));
+      next.height += delta;
+    }
+  }
+
+  board.localRect = clampLocalRect(next);
+  board.growthOrigin = {
+    x: board.localRect.x + board.localRect.width / 2,
+    y: board.localRect.y + board.localRect.height / 2,
+  };
+  board.hitTargetIds = normalizeHitTargetIds(board).filter((id) => id !== opponent.id);
+  syncBoardFormulasFromRect(board);
+  applyPlacementMeta(board);
+  applyLocalRectToNode(board, board.localRect);
+  return true;
+}
+
+function setLoserGrowthOriginFromZeroToCollision(winner, loser) {
+  if (!winner || !loser) return false;
+  const axis = loser.orientation === "vertical" ? "vertical" : loser.orientation === "horizontal" ? "horizontal" : null;
+  if (!axis) return false;
+  const intersection = getPairIntersectionRect(winner, loser);
+  if (axis === "horizontal") {
+    const collisionY = clamp((intersection.top + intersection.bottom) / 2, 0, cabinetModel.H);
+    loser.growthOrigin = { x: 0.1, y: collisionY };
+  } else {
+    const collisionX = clamp((intersection.left + intersection.right) / 2, 0, cabinetModel.W);
+    loser.growthOrigin = { x: collisionX, y: 0.1 };
+  }
+  loser.hitTargetIds = [...new Set([...(normalizeHitTargetIds(loser) || []), winner.id])];
+  loser.traceMeta = null;
+  return true;
+}
+
 function applyWinnerPreferenceForSelected() {
   const winner = getBoardByNode(selectedNode);
   if (!winner) {
@@ -898,7 +975,7 @@ function tryMergeAdjacentBoards() {
   return false;
 }
 
-function applyJunctionMode(junction, mode) {
+function applyJunctionMode(junction, mode, previousMode = null) {
   const a = boards.find((item) => item.id === junction.aId);
   const b = boards.find((item) => item.id === junction.bId);
   if (!a || !b) return;
@@ -908,7 +985,17 @@ function applyJunctionMode(junction, mode) {
   if (junction.kind === "L") {
     const winner = mode === "a-wins" ? a : b;
     const loser = winner === a ? b : a;
-    applyWinnerAgainstBoard(winner, loser);
+    const prevWinner = previousMode === "a-wins" ? a : previousMode === "b-wins" ? b : null;
+    const prevLoser = prevWinner ? (prevWinner === a ? b : a) : null;
+    if (prevLoser && prevLoser.id === winner.id) {
+      extendBoardTowardOpponentByLength(winner, loser);
+    }
+    if (prevWinner && prevWinner.id === loser.id) {
+      setLoserGrowthOriginFromZeroToCollision(winner, loser);
+    }
+    if (!previousMode || previousMode === mode) {
+      applyWinnerAgainstBoard(winner, loser);
+    }
     return;
   }
 
@@ -995,8 +1082,8 @@ function refreshJunctionMarkers() {
       const idx = options.indexOf(current);
       const next = options[(idx + 1 + options.length) % options.length];
       const accepted = runWithPropagationGuard(null, () => {
+        applyJunctionMode(junction, next, current);
         junctionModeByKey[key] = next;
-        applyJunctionMode(junction, next);
       });
       if (!accepted) return;
       refreshJunctionMarkers();
