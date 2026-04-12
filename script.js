@@ -104,6 +104,9 @@ let lastHudOperation = "move";
 const keyBuffer = { text: "" };
 const boards = [];
 const guideLines = [];
+const junctionMarkers = [];
+const junctionModeByKey = {};
+const halfLapPairKeys = new Set();
 let guideCounter = 1;
 let boardCounter = 1;
 const fabricationPolicy = {
@@ -538,6 +541,78 @@ function findIntersectingBoards(sourceBoard) {
   });
 }
 
+function getPairIntersectionRect(a, b) {
+  const left = Math.max(a.localRect.x, b.localRect.x);
+  const right = Math.min(a.localRect.x + a.localRect.width, b.localRect.x + b.localRect.width);
+  const top = Math.max(a.localRect.y, b.localRect.y);
+  const bottom = Math.min(a.localRect.y + a.localRect.height, b.localRect.y + b.localRect.height);
+  return { left, right, top, bottom, width: right - left, height: bottom - top };
+}
+
+function classifyJunctionKind(a, b) {
+  const inter = getPairIntersectionRect(a, b);
+  const eps = 0.2;
+  if (inter.width <= eps || inter.height <= eps) return null;
+  const av = a.orientation === "vertical";
+  const ah = a.orientation === "horizontal";
+  const bv = b.orientation === "vertical";
+  const bh = b.orientation === "horizontal";
+  if ((av && bh) || (ah && bv)) {
+    const nearCenterA =
+      Math.abs((inter.left + inter.right) / 2 - (a.localRect.x + a.localRect.width / 2)) < Math.max(2, a.thickness) &&
+      Math.abs((inter.top + inter.bottom) / 2 - (a.localRect.y + a.localRect.height / 2)) < Math.max(2, a.thickness);
+    const nearCenterB =
+      Math.abs((inter.left + inter.right) / 2 - (b.localRect.x + b.localRect.width / 2)) < Math.max(2, b.thickness) &&
+      Math.abs((inter.top + inter.bottom) / 2 - (b.localRect.y + b.localRect.height / 2)) < Math.max(2, b.thickness);
+    if (nearCenterA && nearCenterB) return "X";
+    return "T";
+  }
+  return "L";
+}
+
+function getJunctionKey(junction) {
+  const ids = [junction.aId, junction.bId].sort();
+  return `${junction.kind}:${ids[0]}:${ids[1]}`;
+}
+
+function getJunctionModes(kind) {
+  if (kind === "X") return ["vertical-wins", "horizontal-wins", "half-lap"];
+  if (kind === "T") return ["a-pass", "b-pass"];
+  return ["a-wins", "b-wins"];
+}
+
+function getJunctionModeLabel(mode) {
+  if (mode === "a-wins") return "A>";
+  if (mode === "b-wins") return "B>";
+  if (mode === "a-pass") return "A通";
+  if (mode === "b-pass") return "B通";
+  if (mode === "vertical-wins") return "縦勝";
+  if (mode === "horizontal-wins") return "横勝";
+  if (mode === "half-lap") return "相欠";
+  return "?";
+}
+
+function buildJunctions() {
+  const junctions = [];
+  for (let i = 0; i < boards.length; i += 1) {
+    for (let j = i + 1; j < boards.length; j += 1) {
+      const a = boards[i];
+      const b = boards[j];
+      const kind = classifyJunctionKind(a, b);
+      if (!kind) continue;
+      const inter = getPairIntersectionRect(a, b);
+      junctions.push({
+        id: `${a.id}__${b.id}`,
+        kind,
+        aId: a.id,
+        bId: b.id,
+        center: { x: (inter.left + inter.right) / 2, y: (inter.top + inter.bottom) / 2 },
+      });
+    }
+  }
+  return junctions;
+}
+
 function buildFixedBoundaryRef(value) {
   return {
     value,
@@ -660,9 +735,246 @@ function applyWinnerPreferenceForSelected() {
   refreshFabricationPolicyState(`勝ち変更適用: ${winner.name} を勝ち / 対象 ${intersecting.length} 部材`);
 }
 
+function splitTargetByPasser(targetBoard, passerBoard) {
+  if (!targetBoard || !passerBoard) return false;
+  const targetIdx = boards.findIndex((item) => item.id === targetBoard.id);
+  if (targetIdx < 0) return false;
+  const orient = targetBoard.orientation;
+  if (orient !== "horizontal" && orient !== "vertical") return false;
+
+  const baseNo = boardCounter;
+  const segA = {
+    ...targetBoard,
+    id: `part-${baseNo}`,
+    drawingNo: `${DRAWING_NO_PREFIX}${String(baseNo).padStart(4, "0")}`,
+    localRect: { ...targetBoard.localRect },
+    positionFormulas: { ...targetBoard.positionFormulas },
+    finishFormulas: { ...targetBoard.finishFormulas },
+    traceMeta: null,
+    node: null,
+  };
+  const segB = {
+    ...targetBoard,
+    id: `part-${baseNo + 1}`,
+    drawingNo: `${DRAWING_NO_PREFIX}${String(baseNo + 1).padStart(4, "0")}`,
+    localRect: { ...targetBoard.localRect },
+    positionFormulas: { ...targetBoard.positionFormulas },
+    finishFormulas: { ...targetBoard.finishFormulas },
+    traceMeta: null,
+    node: null,
+  };
+
+  if (orient === "horizontal") {
+    const cutMin = passerBoard.localRect.x;
+    const cutMax = passerBoard.localRect.x + passerBoard.localRect.width;
+    const leftLen = cutMin - targetBoard.localRect.x;
+    const rightLen = targetBoard.localRect.x + targetBoard.localRect.width - cutMax;
+    if (leftLen < MIN_DRAW_SIZE_MM || rightLen < MIN_DRAW_SIZE_MM) return false;
+    segA.localRect = clampLocalRect({ ...targetBoard.localRect, width: leftLen });
+    segB.localRect = clampLocalRect({ ...targetBoard.localRect, x: cutMax, width: rightLen });
+    segA.positionFormulas.w = `(${passerBoard.positionFormulas.x}) - (${targetBoard.positionFormulas.x})`;
+    segB.positionFormulas.x = `(${passerBoard.positionFormulas.x}) + (${passerBoard.positionFormulas.w})`;
+    segB.positionFormulas.w = `((${targetBoard.positionFormulas.x}) + (${targetBoard.positionFormulas.w})) - ((${passerBoard.positionFormulas.x}) + (${passerBoard.positionFormulas.w}))`;
+    segA.finishFormulas.W = formatMm(segA.localRect.width);
+    segB.finishFormulas.W = formatMm(segB.localRect.width);
+  } else {
+    const cutMin = passerBoard.localRect.y;
+    const cutMax = passerBoard.localRect.y + passerBoard.localRect.height;
+    const topLen = cutMin - targetBoard.localRect.y;
+    const bottomLen = targetBoard.localRect.y + targetBoard.localRect.height - cutMax;
+    if (topLen < MIN_DRAW_SIZE_MM || bottomLen < MIN_DRAW_SIZE_MM) return false;
+    segA.localRect = clampLocalRect({ ...targetBoard.localRect, height: topLen });
+    segB.localRect = clampLocalRect({ ...targetBoard.localRect, y: cutMax, height: bottomLen });
+    segA.positionFormulas.h = `(${passerBoard.positionFormulas.y}) - (${targetBoard.positionFormulas.y})`;
+    segB.positionFormulas.y = `(${passerBoard.positionFormulas.y}) + (${passerBoard.positionFormulas.h})`;
+    segB.positionFormulas.h = `((${targetBoard.positionFormulas.y}) + (${targetBoard.positionFormulas.h})) - ((${passerBoard.positionFormulas.y}) + (${passerBoard.positionFormulas.h}))`;
+    segA.finishFormulas.H = formatMm(segA.localRect.height);
+    segB.finishFormulas.H = formatMm(segB.localRect.height);
+  }
+
+  targetBoard.node?.destroy();
+  segA.node = createBoardNode(segA);
+  segB.node = createBoardNode(segB);
+  applyPlacementMeta(segA);
+  applyPlacementMeta(segB);
+  boards.splice(targetIdx, 1, segA, segB);
+  layer.add(segA.node);
+  layer.add(segB.node);
+  boardCounter += 2;
+  return true;
+}
+
+function tryMergeAdjacentBoards() {
+  for (let i = 0; i < boards.length; i += 1) {
+    for (let j = i + 1; j < boards.length; j += 1) {
+      const a = boards[i];
+      const b = boards[j];
+      if (!a || !b) continue;
+      if (a.orientation !== b.orientation) continue;
+      if (a.orientation !== "horizontal" && a.orientation !== "vertical") continue;
+      if (a.matId !== b.matId || a.thickness !== b.thickness) continue;
+
+      if (a.orientation === "horizontal") {
+        if (Math.abs(a.localRect.y - b.localRect.y) > 0.2 || Math.abs(a.localRect.height - b.localRect.height) > 0.2) continue;
+        const left = a.localRect.x <= b.localRect.x ? a : b;
+        const right = left === a ? b : a;
+        if (Math.abs(left.localRect.x + left.localRect.width - right.localRect.x) > 0.2) continue;
+        const mergedRect = {
+          x: left.localRect.x,
+          y: left.localRect.y,
+          width: left.localRect.width + right.localRect.width,
+          height: left.localRect.height,
+        };
+        if (overlapsAnyOtherBoard(mergedRect, left.id, getBoardPadding(left))) continue;
+        left.localRect = clampLocalRect(mergedRect);
+        left.positionFormulas.x = formatMm(left.localRect.x);
+        left.positionFormulas.w = formatMm(left.localRect.width);
+        left.finishFormulas.W = formatMm(left.localRect.width);
+        right.node?.destroy();
+        boards.splice(boards.indexOf(right), 1);
+        return true;
+      }
+
+      if (Math.abs(a.localRect.x - b.localRect.x) > 0.2 || Math.abs(a.localRect.width - b.localRect.width) > 0.2) continue;
+      const top = a.localRect.y <= b.localRect.y ? a : b;
+      const bottom = top === a ? b : a;
+      if (Math.abs(top.localRect.y + top.localRect.height - bottom.localRect.y) > 0.2) continue;
+      const mergedRect = {
+        x: top.localRect.x,
+        y: top.localRect.y,
+        width: top.localRect.width,
+        height: top.localRect.height + bottom.localRect.height,
+      };
+      if (overlapsAnyOtherBoard(mergedRect, top.id, getBoardPadding(top))) continue;
+      top.localRect = clampLocalRect(mergedRect);
+      top.positionFormulas.y = formatMm(top.localRect.y);
+      top.positionFormulas.h = formatMm(top.localRect.height);
+      top.finishFormulas.H = formatMm(top.localRect.height);
+      bottom.node?.destroy();
+      boards.splice(boards.indexOf(bottom), 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+function applyJunctionMode(junction, mode) {
+  const a = boards.find((item) => item.id === junction.aId);
+  const b = boards.find((item) => item.id === junction.bId);
+  if (!a || !b) return;
+  const halfLapKey = [a.id, b.id].sort().join("|");
+  halfLapPairKeys.delete(halfLapKey);
+
+  if (junction.kind === "L") {
+    const winner = mode === "a-wins" ? a : b;
+    const loser = winner === a ? b : a;
+    applyWinnerAgainstBoard(winner, loser);
+    return;
+  }
+
+  if (junction.kind === "T") {
+    if (mode === "a-pass") {
+      splitTargetByPasser(b, a);
+    } else {
+      splitTargetByPasser(a, b);
+    }
+    while (tryMergeAdjacentBoards()) {}
+    return;
+  }
+
+  if (junction.kind === "X") {
+    if (mode === "half-lap") {
+      halfLapPairKeys.add(halfLapKey);
+      return;
+    }
+    if (mode === "vertical-wins") {
+      const winner = a.orientation === "vertical" ? a : b;
+      const loser = winner === a ? b : a;
+      applyWinnerAgainstBoard(winner, loser);
+      return;
+    }
+    const winner = a.orientation === "horizontal" ? a : b;
+    const loser = winner === a ? b : a;
+    applyWinnerAgainstBoard(winner, loser);
+  }
+}
+
+function clearJunctionMarkers() {
+  junctionMarkers.forEach((item) => item.destroy());
+  junctionMarkers.length = 0;
+}
+
+function detectJunctions() {
+  return buildJunctions();
+}
+
+function getJunctionOptions(kind) {
+  return getJunctionModes(kind);
+}
+
+function refreshJunctionMarkers() {
+  clearJunctionMarkers();
+  const junctions = detectJunctions();
+  const labelMap = {
+    "a-wins": "A>",
+    "b-wins": "B>",
+    "a-pass": "A通",
+    "b-pass": "B通",
+    "vertical-wins": "縦勝",
+    "horizontal-wins": "横勝",
+    "half-lap": "相欠",
+  };
+
+  junctions.forEach((junction) => {
+    const key = getJunctionKey(junction);
+    const options = getJunctionOptions(junction.kind);
+    if (!junctionModeByKey[key]) junctionModeByKey[key] = options[0];
+    const center = localToStagePoint(junction.center);
+
+    const group = new Konva.Group({ x: center.x, y: center.y, draggable: false });
+    const circle = new Konva.Circle({
+      radius: 11,
+      fill: "rgba(30,64,175,0.18)",
+      stroke: "#1e3a8a",
+      strokeWidth: 1.2,
+    });
+    const label = new Konva.Text({
+      x: -18,
+      y: -6,
+      width: 36,
+      align: "center",
+      fontSize: 11,
+      fill: "#1e3a8a",
+      text: labelMap[junctionModeByKey[key]] || "?",
+      listening: false,
+    });
+    group.add(circle);
+    group.add(label);
+    group.on("click tap", () => {
+      const current = junctionModeByKey[key];
+      const idx = options.indexOf(current);
+      const next = options[(idx + 1 + options.length) % options.length];
+      const accepted = runWithPropagationGuard(null, () => {
+        junctionModeByKey[key] = next;
+        applyJunctionMode(junction, next);
+      });
+      if (!accepted) return;
+      refreshJunctionMarkers();
+      updatePartsList();
+      refreshHud();
+      layer.batchDraw();
+    });
+    layer.add(group);
+    group.moveToTop();
+    junctionMarkers.push(group);
+  });
+}
+
 function hasAnyBoardOverlap() {
   for (let i = 0; i < boards.length; i += 1) {
     for (let j = i + 1; j < boards.length; j += 1) {
+      const pairKey = [boards[i].id, boards[j].id].sort().join("|");
+      if (halfLapPairKeys.has(pairKey)) continue;
       if (rectsOverlap(getBoardCollisionRect(boards[i]), getBoardCollisionRect(boards[j]))) return true;
     }
   }
@@ -680,12 +992,17 @@ function snapshotBoardsState() {
       isMirrored: board.isMirrored,
     };
   });
-  return snap;
+  return {
+    boards: snap,
+    halfLapPairKeys: [...halfLapPairKeys],
+  };
 }
 
 function restoreBoardsState(snapshot) {
+  halfLapPairKeys.clear();
+  (snapshot.halfLapPairKeys || []).forEach((key) => halfLapPairKeys.add(key));
   boards.forEach((board) => {
-    const saved = snapshot[board.id];
+    const saved = snapshot.boards?.[board.id];
     if (!saved) return;
     board.localRect = { ...saved.localRect };
     board.finishFormulas = { ...saved.finishFormulas };
@@ -1078,6 +1395,7 @@ function drawCabinetFrame(resetBoards) {
     recalcBoardsAfterParentResize();
   }
   guideLines.forEach((guide) => updateGuideLineNode(guide));
+  refreshJunctionMarkers();
   cabinetFrameNode.moveToBottom();
   layer.batchDraw();
 }
