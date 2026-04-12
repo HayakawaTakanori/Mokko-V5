@@ -709,7 +709,6 @@ function applyCollisionMarkerAction(junction) {
       halfLapPairKeys.delete(pairKey);
       shrinkBoardNearOpponentByLength(opponent, source, extendedBy);
     }
-    source.hitTargetIds = [...new Set([...(normalizeHitTargetIds(source) || []), opponent.id])];
     syncBoardFormulasFromRect(source);
     applyPlacementMeta(source);
     moveBoardAfter(opponent, source);
@@ -764,7 +763,6 @@ function extendBoardTowardOpponentByLength(board, opponent) {
   if (delta <= 0) return 0;
 
   board.localRect = clampLocalRect(next);
-  board.hitTargetIds = normalizeHitTargetIds(board).filter((id) => id !== opponent.id);
   syncBoardFormulasFromRect(board);
   applyPlacementMeta(board);
   applyLocalRectToNode(board, board.localRect);
@@ -778,14 +776,6 @@ function splitTargetByPasser(targetBoard, passerBoard) {
   if (targetIdx < 0) return false;
   const orient = targetBoard.orientation;
   if (orient !== "horizontal" && orient !== "vertical") return false;
-  const targetDeps = normalizeHitTargetIds(targetBoard);
-  const passerDeps = normalizeHitTargetIds(passerBoard);
-  const inheritedDeps = [];
-  [...targetDeps, ...passerDeps, passerBoard.id].forEach((depId) => {
-    if (depId === targetBoard.id) return;
-    if (!inheritedDeps.includes(depId)) inheritedDeps.push(depId);
-  });
-
   const baseNo = boardCounter;
   const segA = {
     ...targetBoard,
@@ -795,7 +785,6 @@ function splitTargetByPasser(targetBoard, passerBoard) {
     positionFormulas: { ...targetBoard.positionFormulas },
     finishFormulas: { ...targetBoard.finishFormulas },
     traceMeta: null,
-    hitTargetIds: [...inheritedDeps],
     node: null,
   };
   const segB = {
@@ -806,7 +795,6 @@ function splitTargetByPasser(targetBoard, passerBoard) {
     positionFormulas: { ...targetBoard.positionFormulas },
     finishFormulas: { ...targetBoard.finishFormulas },
     traceMeta: null,
-    hitTargetIds: [...inheritedDeps],
     node: null,
   };
 
@@ -879,7 +867,6 @@ function tryMergeAdjacentBoards() {
         left.positionFormulas.x = formatMm(left.localRect.x);
         left.positionFormulas.w = formatMm(left.localRect.width);
         left.finishFormulas.W = formatMm(left.localRect.width);
-        left.hitTargetIds = [...new Set([...(left.hitTargetIds || []), ...(right.hitTargetIds || [])])];
         right.node?.destroy();
         boards.splice(boards.indexOf(right), 1);
         return true;
@@ -900,7 +887,6 @@ function tryMergeAdjacentBoards() {
       top.positionFormulas.y = formatMm(top.localRect.y);
       top.positionFormulas.h = formatMm(top.localRect.height);
       top.finishFormulas.H = formatMm(top.localRect.height);
-      top.hitTargetIds = [...new Set([...(top.hitTargetIds || []), ...(bottom.hitTargetIds || [])])];
       bottom.node?.destroy();
       boards.splice(boards.indexOf(bottom), 1);
       return true;
@@ -962,118 +948,6 @@ function hasAnyBoardOverlap() {
   return false;
 }
 
-function normalizeHitTargetIds(board, idSet = new Set(boards.map((item) => item.id))) {
-  const source = Array.isArray(board?.hitTargetIds) ? board.hitTargetIds : [];
-  const cleaned = [];
-  source.forEach((id) => {
-    if (typeof id !== "string") return;
-    if (id === board.id) return;
-    if (!idSet.has(id)) return;
-    if (!cleaned.includes(id)) cleaned.push(id);
-  });
-  if (board) board.hitTargetIds = cleaned;
-  return cleaned;
-}
-
-function extractHitTargetIdsFromTrace(traceMeta, selfId, idSet = new Set(boards.map((item) => item.id))) {
-  if (!traceMeta) return [];
-  const hits = [traceMeta.negative, traceMeta.positive];
-  const ids = [];
-  hits.forEach((hit) => {
-    const sourceId = hit?.sourceId;
-    if (typeof sourceId !== "string") return;
-    if (sourceId === selfId || sourceId === "parent") return;
-    if (!idSet.has(sourceId)) return;
-    if (!ids.includes(sourceId)) ids.push(sourceId);
-  });
-  return ids;
-}
-
-function orderBoardsByDependencies(boardList) {
-  const originalIndex = new Map(boards.map((board, index) => [board.id, index]));
-  const targetSet = new Set(boardList.map((board) => board.id));
-  const indegree = new Map();
-  const adjacency = new Map();
-  const boardById = new Map(boards.map((board) => [board.id, board]));
-
-  boardList.forEach((board) => {
-    indegree.set(board.id, 0);
-    adjacency.set(board.id, []);
-  });
-
-  boardList.forEach((board) => {
-    const deps = normalizeHitTargetIds(board).filter((id) => targetSet.has(id));
-    deps.forEach((depId) => {
-      indegree.set(board.id, (indegree.get(board.id) || 0) + 1);
-      adjacency.get(depId).push(board.id);
-    });
-  });
-
-  const ready = boardList
-    .filter((board) => indegree.get(board.id) === 0)
-    .sort((a, b) => (originalIndex.get(a.id) || 0) - (originalIndex.get(b.id) || 0));
-  const ordered = [];
-
-  while (ready.length > 0) {
-    const next = ready.shift();
-    ordered.push(next);
-    const children = adjacency.get(next.id) || [];
-    children.forEach((childId) => {
-      indegree.set(childId, (indegree.get(childId) || 0) - 1);
-      if (indegree.get(childId) === 0) {
-        ready.push(boardById.get(childId));
-        ready.sort((a, b) => (originalIndex.get(a.id) || 0) - (originalIndex.get(b.id) || 0));
-      }
-    });
-  }
-
-  if (ordered.length !== boardList.length) {
-    const unresolved = boardList
-      .filter((board) => !ordered.some((item) => item.id === board.id))
-      .sort((a, b) => (originalIndex.get(a.id) || 0) - (originalIndex.get(b.id) || 0));
-    ordered.push(...unresolved);
-  }
-
-  return ordered;
-}
-
-function sortBoardsByDependenciesInPlace() {
-  if (boards.length <= 1) return;
-  const ordered = orderBoardsByDependencies(boards);
-  boards.splice(0, boards.length, ...ordered);
-}
-
-function buildReverseDependencyMap() {
-  const reverse = new Map();
-  boards.forEach((board) => {
-    const deps = normalizeHitTargetIds(board);
-    deps.forEach((depId) => {
-      if (!reverse.has(depId)) reverse.set(depId, new Set());
-      reverse.get(depId).add(board.id);
-    });
-  });
-  return reverse;
-}
-
-function collectDependentBoardIds(sourceBoardId) {
-  if (!sourceBoardId) return null;
-  if (!boards.some((board) => board.id === sourceBoardId)) return null;
-  const reverse = buildReverseDependencyMap();
-  const dirty = new Set([sourceBoardId]);
-  const queue = [sourceBoardId];
-  while (queue.length > 0) {
-    const next = queue.shift();
-    const followers = reverse.get(next);
-    if (!followers) continue;
-    followers.forEach((childId) => {
-      if (dirty.has(childId)) return;
-      dirty.add(childId);
-      queue.push(childId);
-    });
-  }
-  return dirty;
-}
-
 function snapshotBoardsState() {
   const snap = {};
   boards.forEach((board) => {
@@ -1081,7 +955,6 @@ function snapshotBoardsState() {
       localRect: { ...board.localRect },
       finishFormulas: { ...board.finishFormulas },
       positionFormulas: { ...board.positionFormulas },
-      hitTargetIds: Array.isArray(board.hitTargetIds) ? [...board.hitTargetIds] : [],
       placementSide: board.placementSide,
       isMirrored: board.isMirrored,
     };
@@ -1101,7 +974,6 @@ function restoreBoardsState(snapshot) {
     board.localRect = { ...saved.localRect };
     board.finishFormulas = { ...saved.finishFormulas };
     board.positionFormulas = { ...saved.positionFormulas };
-    board.hitTargetIds = Array.isArray(saved.hitTargetIds) ? [...saved.hitTargetIds] : [];
     board.placementSide = saved.placementSide;
     board.isMirrored = saved.isMirrored;
     applyLocalRectToNode(board, board.localRect);
@@ -1207,12 +1079,10 @@ function buildPhysicalGrowthRect(board, index) {
 
 function rebuildBoardFromIndex(board, index) {
   if (!board) return;
-  const idSet = new Set(boards.map((item) => item.id));
   if (board.orientation === "vertical" || board.orientation === "horizontal") {
     const grown = buildPhysicalGrowthRect(board, index);
     if (grown) {
       board.localRect = grown.rect;
-      board.hitTargetIds = extractHitTargetIdsFromTrace(grown.traceMeta, board.id, idSet);
       if (grown.traceMeta?.axis === "horizontal") {
         board.positionFormulas.x = formatMm(grown.rect.x);
         board.positionFormulas.w = formatMm(grown.rect.width);
@@ -1225,11 +1095,9 @@ function rebuildBoardFromIndex(board, index) {
       }
     } else {
       board.localRect = resolveBoardRectFromFormulas(board);
-      board.hitTargetIds = [];
     }
   } else {
     board.localRect = resolveBoardRectFromFormulas(board);
-    normalizeHitTargetIds(board, idSet);
   }
   applyPlacementMeta(board);
 }
@@ -1240,21 +1108,9 @@ function recalcAllBoardsFromZero(sourceBoardId = null) {
     return true;
   }
 
-  sortBoardsByDependenciesInPlace();
-  let dirtyIds = sourceBoardId ? collectDependentBoardIds(sourceBoardId) : null;
-  if (sourceBoardId && !dirtyIds) dirtyIds = null;
-
   for (let i = 0; i < boards.length; i += 1) {
     const board = boards[i];
-    if (!dirtyIds || dirtyIds.has(board.id)) rebuildBoardFromIndex(board, i);
-    applyLocalRectToNode(board, board.localRect);
-  }
-
-  sortBoardsByDependenciesInPlace();
-  dirtyIds = sourceBoardId ? collectDependentBoardIds(sourceBoardId) : null;
-  for (let i = 0; i < boards.length; i += 1) {
-    const board = boards[i];
-    if (!dirtyIds || dirtyIds.has(board.id)) rebuildBoardFromIndex(board, i);
+    rebuildBoardFromIndex(board, i);
     applyLocalRectToNode(board, board.localRect);
   }
 
@@ -2420,7 +2276,6 @@ function createBoardFromDraw(localRect, start, end, orientationOverride, traceMe
     marginFormulas: { W: `${DEFAULT_MARGIN_MM}`, H: `${DEFAULT_MARGIN_MM}`, D: `${DEFAULT_MARGIN_MM}` },
     localRect,
     traceMeta: null,
-    hitTargetIds: extractHitTargetIdsFromTrace(traceMetaOverride, `part-${boardCounter}`),
     finishFormulas,
     positionFormulas,
     node: null,
@@ -2494,7 +2349,6 @@ function updatePartsList() {
           <div class="row"><span>発注寸法（長さx奥行）</span><strong>${dimsLabel(getActualOrderSize(board, dims).length, getActualOrderSize(board, dims).depth)}</strong></div>
           <div class="row"><span>発注寸法</span><strong>${dimsLabel(dims.order.W ?? 0, dims.order.H ?? 0)}</strong></div>
           <div class="row"><span>座標式</span><strong>x:${board.positionFormulas.x} / y:${board.positionFormulas.y}</strong></div>
-          <div class="row"><span>依存(hitTargetIds)</span><strong>${(board.hitTargetIds || []).join(", ") || "-"}</strong></div>
         </article>
       `;
     })
