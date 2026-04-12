@@ -77,6 +77,9 @@ const cabinetHeightEl = document.getElementById("cabinet-height");
 const cabinetDepthEl = document.getElementById("cabinet-depth");
 const applyCabinetBtn = document.getElementById("apply-cabinet-btn");
 const modeSelectEl = document.getElementById("draw-mode-select");
+const maxStockLengthEl = document.getElementById("max-stock-length");
+const applyWinnerBtn = document.getElementById("apply-winner-btn");
+const fabricationPolicyStateEl = document.getElementById("fabrication-policy-state");
 
 let stage;
 let layer;
@@ -101,6 +104,10 @@ const boards = [];
 const guideLines = [];
 let guideCounter = 1;
 let boardCounter = 1;
+const fabricationPolicy = {
+  mergePolicy: "never",
+  maxStockLength: 2400,
+};
 
 const cabinetModel = {
   x: 60,
@@ -331,6 +338,159 @@ function getBoardBoundaryExpr(board, axis, edge) {
     return `(${p.x}) + (${thicknessExpr})`;
   }
   return `(${p.x}) + (${p.w})`;
+}
+
+function refreshFabricationPolicyState(message) {
+  if (!fabricationPolicyStateEl) return;
+  const base = `結合ポリシー: 非結合固定 / 原板最大長さ: ${Math.round(fabricationPolicy.maxStockLength)} mm`;
+  fabricationPolicyStateEl.textContent = message ? `${base} / ${message}` : base;
+}
+
+function isMeaningfulOverlap(a, b) {
+  const eps = 0.2;
+  const left = Math.max(a.x, b.x);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const top = Math.max(a.y, b.y);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return right - left > eps && bottom - top > eps;
+}
+
+function isEdgeContact(a, b) {
+  const eps = 0.2;
+  const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  const touchOnVerticalEdge = Math.abs(a.x + a.width - b.x) <= eps || Math.abs(b.x + b.width - a.x) <= eps;
+  const touchOnHorizontalEdge = Math.abs(a.y + a.height - b.y) <= eps || Math.abs(b.y + b.height - a.y) <= eps;
+  return (touchOnVerticalEdge && overlapY > eps) || (touchOnHorizontalEdge && overlapX > eps);
+}
+
+function findIntersectingBoards(sourceBoard) {
+  return boards.filter((candidate) => {
+    if (candidate.id === sourceBoard.id) return false;
+    return isMeaningfulOverlap(sourceBoard.localRect, candidate.localRect) || isEdgeContact(sourceBoard.localRect, candidate.localRect);
+  });
+}
+
+function buildFixedBoundaryRef(value) {
+  return {
+    value,
+    expr: formatMm(value),
+    sourceType: "fixed",
+    sourceId: "fixed",
+    edge: "line",
+  };
+}
+
+function getContactBoundaryFromWinner(winner, loser, axis) {
+  if (axis === "vertical") {
+    const winnerMid = winner.localRect.y + winner.localRect.height / 2;
+    const loserMid = loser.localRect.y + loser.localRect.height / 2;
+    if (loserMid < winnerMid) {
+      return {
+        edge: "max",
+        value: winner.localRect.y,
+        expr: getBoardBoundaryExpr(winner, "vertical", "min"),
+        sourceType: "part",
+        sourceId: winner.id,
+      };
+    }
+    return {
+      edge: "min",
+      value: winner.localRect.y + winner.localRect.height,
+      expr: getBoardBoundaryExpr(winner, "vertical", "max"),
+      sourceType: "part",
+      sourceId: winner.id,
+    };
+  }
+
+  const winnerMid = winner.localRect.x + winner.localRect.width / 2;
+  const loserMid = loser.localRect.x + loser.localRect.width / 2;
+  if (loserMid < winnerMid) {
+    return {
+      edge: "max",
+      value: winner.localRect.x,
+      expr: getBoardBoundaryExpr(winner, "horizontal", "min"),
+      sourceType: "part",
+      sourceId: winner.id,
+    };
+  }
+  return {
+    edge: "min",
+    value: winner.localRect.x + winner.localRect.width,
+    expr: getBoardBoundaryExpr(winner, "horizontal", "max"),
+    sourceType: "part",
+    sourceId: winner.id,
+  };
+}
+
+function applyWinnerAgainstBoard(winner, loser) {
+  const axis = loser.orientation === "vertical" ? "vertical" : loser.orientation === "horizontal" ? "horizontal" : null;
+  if (!axis) return false;
+
+  const boundary = getContactBoundaryFromWinner(winner, loser, axis);
+  if (!boundary) return false;
+
+  if (axis === "vertical") {
+    const fixedTop = buildFixedBoundaryRef(loser.localRect.y);
+    const fixedBottom = buildFixedBoundaryRef(loser.localRect.y + loser.localRect.height);
+    loser.traceMeta = {
+      axis,
+      probe: clamp(loser.localRect.x + loser.localRect.width / 2, 0, cabinetModel.W),
+      negative: boundary.edge === "min" ? boundary : fixedTop,
+      positive: boundary.edge === "max" ? boundary : fixedBottom,
+    };
+    const lengthExpr = buildTraceLengthFormula(loser.traceMeta);
+    if (!lengthExpr) return false;
+    loser.positionFormulas.y = resolveBoundaryExpr(loser.traceMeta.negative, axis);
+    loser.positionFormulas.h = lengthExpr;
+    loser.finishFormulas.H = lengthExpr;
+  } else {
+    const fixedLeft = buildFixedBoundaryRef(loser.localRect.x);
+    const fixedRight = buildFixedBoundaryRef(loser.localRect.x + loser.localRect.width);
+    loser.traceMeta = {
+      axis,
+      probe: clamp(loser.localRect.y + loser.localRect.height / 2, 0, cabinetModel.H),
+      negative: boundary.edge === "min" ? boundary : fixedLeft,
+      positive: boundary.edge === "max" ? boundary : fixedRight,
+    };
+    const lengthExpr = buildTraceLengthFormula(loser.traceMeta);
+    if (!lengthExpr) return false;
+    loser.positionFormulas.x = resolveBoundaryExpr(loser.traceMeta.negative, axis);
+    loser.positionFormulas.w = lengthExpr;
+    loser.finishFormulas.W = lengthExpr;
+  }
+
+  loser.localRect = resolveBoardRectFromFormulas(loser);
+  applyPlacementMeta(loser);
+  applyLocalRectToNode(loser, loser.localRect);
+  return true;
+}
+
+function applyWinnerPreferenceForSelected() {
+  const winner = getBoardByNode(selectedNode);
+  if (!winner) {
+    refreshFabricationPolicyState("先に部材を選択してください。");
+    return;
+  }
+  const intersecting = findIntersectingBoards(winner);
+  if (intersecting.length === 0) {
+    refreshFabricationPolicyState("交差部材なし: 勝ち負け変更対象がありません。");
+    return;
+  }
+
+  const accepted = runWithPropagationGuard(winner.id, () => {
+    intersecting.forEach((loser) => {
+      applyWinnerAgainstBoard(winner, loser);
+    });
+  });
+  if (!accepted) {
+    refreshFabricationPolicyState("勝ち負け変更をロールバック: 非重なり条件を満たせませんでした。");
+    return;
+  }
+  updatePartsList();
+  refreshHud();
+  layer.batchDraw();
+  refreshFabricationPolicyState(`勝ち変更適用: ${winner.name} を勝ち / 対象 ${intersecting.length} 部材`);
 }
 
 function hasAnyBoardOverlap() {
@@ -1076,6 +1236,11 @@ function expandTracePlacement(start, current, templateId, orientationOverride) {
 
 function resolveBoundaryValue(boundaryRef, axis) {
   if (!boundaryRef) return null;
+  if (boundaryRef.sourceType === "fixed") {
+    if (Number.isFinite(boundaryRef.value)) return boundaryRef.value;
+    const fallback = Number(boundaryRef.expr);
+    return Number.isFinite(fallback) ? fallback : null;
+  }
   if (boundaryRef.sourceType === "parent") {
     if (axis === "vertical") return boundaryRef.edge === "min" ? 0 : cabinetModel.H;
     return boundaryRef.edge === "min" ? 0 : cabinetModel.W;
@@ -1095,6 +1260,11 @@ function resolveBoundaryValue(boundaryRef, axis) {
 
 function resolveBoundaryExpr(boundaryRef, axis) {
   if (!boundaryRef) return "0";
+  if (boundaryRef.sourceType === "fixed") {
+    if (boundaryRef.expr !== undefined && boundaryRef.expr !== null) return `${boundaryRef.expr}`;
+    if (Number.isFinite(boundaryRef.value)) return formatMm(boundaryRef.value);
+    return "0";
+  }
   if (boundaryRef.sourceType === "parent") {
     if (axis === "vertical") return boundaryRef.edge === "min" ? "0" : "$H";
     return boundaryRef.edge === "min" ? "0" : "$W";
@@ -1116,6 +1286,9 @@ function resolveBoundaryExpr(boundaryRef, axis) {
 
 function describeBoundarySource(boundaryRef) {
   if (!boundaryRef) return "-";
+  if (boundaryRef.sourceType === "fixed") {
+    return `固定(${boundaryRef.expr ?? formatMm(boundaryRef.value ?? 0)})`;
+  }
   if (boundaryRef.sourceType === "parent") {
     return boundaryRef.edge === "min" ? "親枠(min)" : "親枠(max)";
   }
@@ -1821,6 +1994,20 @@ function initStage() {
   });
 
   applyCabinetBtn.addEventListener("click", () => drawCabinetFrame(false));
+  if (maxStockLengthEl) {
+    maxStockLengthEl.addEventListener("change", () => {
+      const parsed = Number(maxStockLengthEl.value);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        fabricationPolicy.maxStockLength = parsed;
+      }
+      refreshFabricationPolicyState();
+    });
+  }
+  if (applyWinnerBtn) {
+    applyWinnerBtn.addEventListener("click", () => {
+      applyWinnerPreferenceForSelected();
+    });
+  }
   modeSelectEl.addEventListener("change", () => {
     isDrawing = false;
     guideDragStart = null;
@@ -1842,6 +2029,7 @@ function initStage() {
   });
 
   drawCabinetFrame(true);
+  refreshFabricationPolicyState();
   refreshHud();
 }
 

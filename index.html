@@ -267,6 +267,14 @@
             </select>
           </label>
         </div>
+        <div class="controls">
+          <label>
+            原板最大長さ (mm)
+            <input id="max-stock-length" type="number" value="2400" min="100" />
+          </label>
+          <button id="apply-winner-btn" type="button">選択部材を勝ちにする（非結合）</button>
+          <p class="meta" id="fabrication-policy-state">結合ポリシー: -</p>
+        </div>
         <p>先に外寸で正面枠を描き、その中へテンプレート部材をドラッグ配置します。</p>
         <p class="meta">標準は厚み表示。例外は 扉・引き出し前板・背板を面表示で扱います。</p>
         <div id="parts-list" class="parts-list">
@@ -284,6 +292,7 @@
           <li>テンプレート選択: 板構成ルール切替</li>
           <li>補助線モード: 辺を掴んで離すと平行補助線を作成</li>
           <li>ドラッグ: 新規板作成（板厚自動 + 自動スナップ）</li>
+          <li>勝ち負け: 部材選択後「選択部材を勝ちにする」を押す（原板制約優先で非結合）</li>
           <li>クリック: 板を選択、ドラッグで移動</li>
           <li>角ハンドル: リサイズ</li>
           <li>キー入力: <code>+30</code>, <code>-5</code>, Enter で相対調整</li>
