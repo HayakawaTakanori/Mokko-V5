@@ -774,8 +774,9 @@ function applyCollisionMarkerAction(junction) {
   }
   const pairKey = [source.id, opponent.id].sort().join("|");
   const allowOverlap = normalized === "3";
+  let extendedBy = 0;
   const accepted = runWithPropagationGuard(null, () => {
-    const extendedBy = extendBoardTowardOpponentByLength(source, opponent);
+    extendedBy = extendBoardTowardOpponentByLength(source, opponent);
     if (extendedBy <= 0) return;
     if (allowOverlap) {
       halfLapPairKeys.add(pairKey);
@@ -787,6 +788,10 @@ function applyCollisionMarkerAction(junction) {
     applyPlacementMeta(source);
     moveBoardAfter(opponent, source);
   });
+  if (extendedBy <= 0) {
+    refreshFabricationPolicyState("衝突伸長は未実行: 伸縮量が0のため変更はありません。");
+    return;
+  }
   if (!accepted) {
     const message = allowOverlap
       ? "衝突伸長をロールバック: 例外許可でも整合を保てませんでした。"
