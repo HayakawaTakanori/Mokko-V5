@@ -630,78 +630,145 @@ function moveBoardAfter(anchorBoard, movedBoard) {
   boards.splice(insertIndex, 0, picked);
 }
 
+function shrinkBoardNearOpponentByLength(board, opponent, shrinkLength) {
+  if (!board || !opponent) return 0;
+  if (!Number.isFinite(shrinkLength) || shrinkLength <= 0) return 0;
+  const axis = board.orientation === "vertical" ? "vertical" : board.orientation === "horizontal" ? "horizontal" : null;
+  if (!axis) return 0;
+  const next = { ...board.localRect };
+  let delta = 0;
+
+  if (axis === "horizontal") {
+    const sourceMid = opponent.localRect.x + opponent.localRect.width / 2;
+    const targetMid = board.localRect.x + board.localRect.width / 2;
+    const maxShrink = Math.max(0, next.width - MIN_DRAW_SIZE_MM);
+    delta = Math.min(shrinkLength, maxShrink);
+    if (delta <= 0) return 0;
+    if (sourceMid < targetMid) {
+      next.x += delta;
+      next.width -= delta;
+    } else {
+      next.width -= delta;
+    }
+  } else {
+    const sourceMid = opponent.localRect.y + opponent.localRect.height / 2;
+    const targetMid = board.localRect.y + board.localRect.height / 2;
+    const maxShrink = Math.max(0, next.height - MIN_DRAW_SIZE_MM);
+    delta = Math.min(shrinkLength, maxShrink);
+    if (delta <= 0) return 0;
+    if (sourceMid < targetMid) {
+      next.y += delta;
+      next.height -= delta;
+    } else {
+      next.height -= delta;
+    }
+  }
+
+  board.localRect = clampLocalRect(next);
+  syncBoardFormulasFromRect(board);
+  applyPlacementMeta(board);
+  applyLocalRectToNode(board, board.localRect);
+  return delta;
+}
+
 function applyCollisionMarkerAction(junction) {
   if (!junction || typeof window === "undefined" || typeof window.confirm !== "function") return;
   const a = boards.find((item) => item.id === junction.aId);
   const b = boards.find((item) => item.id === junction.bId);
   if (!a || !b) return;
-  const first = window.confirm(
-    `衝突を検出しました。\nこちら(${a.name})をのばしますか？\nキャンセルで相手側(${b.name})を変更します。`
+  const useA = window.confirm(
+    `衝突を検出しました。\nこちらを変更しますか？\nはい: ${a.name}\nいいえ: ${b.name}`
   );
-  if (!first) {
-    const second = window.confirm(`相手側(${b.name})を変更しますか？`);
-    if (!second) return;
+  const source = useA ? a : b;
+  const opponent = useA ? b : a;
+  const action = window.prompt(
+    [
+      "操作を選んでください:",
+      "1: こちらを伸ばし相手を縮める",
+      "2: やっぱりやめる",
+      "3: 相手も伸ばしたままにする（重なり許可）",
+      "入力: 1 / 2 / 3",
+    ].join("\n"),
+    "1"
+  );
+  if (action === null) return;
+  const normalized = `${action}`.trim();
+  if (normalized === "2") return;
+  if (normalized !== "1" && normalized !== "3") {
+    refreshFabricationPolicyState("衝突操作を中止: 1 / 2 / 3 のいずれかを入力してください。");
+    return;
   }
-  const source = first ? a : b;
-  const opponent = first ? b : a;
+  const pairKey = [source.id, opponent.id].sort().join("|");
+  const allowOverlap = normalized === "3";
   const accepted = runWithPropagationGuard(null, () => {
-    extendBoardTowardOpponentByLength(source, opponent);
+    const extendedBy = extendBoardTowardOpponentByLength(source, opponent);
+    if (extendedBy <= 0) return;
+    if (allowOverlap) {
+      halfLapPairKeys.add(pairKey);
+    } else {
+      halfLapPairKeys.delete(pairKey);
+      shrinkBoardNearOpponentByLength(opponent, source, extendedBy);
+    }
     source.hitTargetIds = [...new Set([...(normalizeHitTargetIds(source) || []), opponent.id])];
     syncBoardFormulasFromRect(source);
     applyPlacementMeta(source);
     moveBoardAfter(opponent, source);
   });
   if (!accepted) {
-    refreshFabricationPolicyState("衝突伸長をロールバック: 非重なり条件を満たせませんでした。");
+    const message = allowOverlap
+      ? "衝突伸長をロールバック: 例外許可でも整合を保てませんでした。"
+      : "衝突伸長をロールバック: 非重なり条件を満たせませんでした。";
+    refreshFabricationPolicyState(message);
     return;
   }
   updatePartsList();
   refreshHud();
   refreshJunctionMarkers();
   layer.batchDraw();
-  refreshFabricationPolicyState(
-    `衝突伸長を適用: ${source.name} を伸長 / ${opponent.name} を基準に再計算・再配置`
-  );
+  const modeLabel = allowOverlap ? "相手をそのまま（重なり例外）" : "相手を縮める";
+  refreshFabricationPolicyState(`衝突伸長を適用: ${source.name} を伸長 / ${modeLabel} / 配置順を更新`);
 }
 
 function extendBoardTowardOpponentByLength(board, opponent) {
-  if (!board || !opponent) return false;
+  if (!board || !opponent) return 0;
   const axis = board.orientation === "vertical" ? "vertical" : board.orientation === "horizontal" ? "horizontal" : null;
-  if (!axis) return false;
+  if (!axis) return 0;
 
   const extendLength = Number.isFinite(opponent.thickness) ? Math.max(0, opponent.thickness) : 0;
-  if (extendLength <= 0) return false;
+  if (extendLength <= 0) return 0;
   const next = { ...board.localRect };
+  let delta = 0;
   if (axis === "horizontal") {
     const boardMid = board.localRect.x + board.localRect.width / 2;
     const opponentMid = opponent.localRect.x + opponent.localRect.width / 2;
     if (opponentMid < boardMid) {
-      const delta = Math.min(extendLength, next.x);
+      delta = Math.min(extendLength, next.x);
       next.x -= delta;
       next.width += delta;
     } else {
-      const delta = Math.min(extendLength, cabinetModel.W - (next.x + next.width));
+      delta = Math.min(extendLength, cabinetModel.W - (next.x + next.width));
       next.width += delta;
     }
   } else {
     const boardMid = board.localRect.y + board.localRect.height / 2;
     const opponentMid = opponent.localRect.y + opponent.localRect.height / 2;
     if (opponentMid < boardMid) {
-      const delta = Math.min(extendLength, next.y);
+      delta = Math.min(extendLength, next.y);
       next.y -= delta;
       next.height += delta;
     } else {
-      const delta = Math.min(extendLength, cabinetModel.H - (next.y + next.height));
+      delta = Math.min(extendLength, cabinetModel.H - (next.y + next.height));
       next.height += delta;
     }
   }
+  if (delta <= 0) return 0;
 
   board.localRect = clampLocalRect(next);
   board.hitTargetIds = normalizeHitTargetIds(board).filter((id) => id !== opponent.id);
   syncBoardFormulasFromRect(board);
   applyPlacementMeta(board);
   applyLocalRectToNode(board, board.localRect);
-  return true;
+  return delta;
 }
 
 
