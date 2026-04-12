@@ -1297,7 +1297,7 @@ function resolveBoardRectFromFormulas(board) {
   } else if (board.orientation === "horizontal") {
     fromFormulas.height = board.thickness;
   }
-  return clampLocalRect(fromFormulas);
+  return clampBoardRectByOrientation(board, fromFormulas);
 }
 
 function getBoardTracePlacementByIndex(board, index) {
@@ -1335,7 +1335,7 @@ function buildPhysicalGrowthRect(board, index) {
     const hits = raycastBidirectional(boundaries, boundedOrigin.y);
     if (!hits?.negative || !hits?.positive || hits.positive.value <= hits.negative.value) return null;
     return {
-      rect: clampLocalRect({
+      rect: clampBoardRectByOrientation(board, {
         x: boundedOrigin.x - board.thickness / 2,
         y: hits.negative.value,
         width: board.thickness,
@@ -1355,7 +1355,7 @@ function buildPhysicalGrowthRect(board, index) {
     const hits = raycastBidirectional(boundaries, boundedOrigin.x);
     if (!hits?.negative || !hits?.positive || hits.positive.value <= hits.negative.value) return null;
     return {
-      rect: clampLocalRect({
+      rect: clampBoardRectByOrientation(board, {
         x: hits.negative.value,
         y: boundedOrigin.y - board.thickness / 2,
         width: hits.positive.value - hits.negative.value,
@@ -1471,7 +1471,7 @@ function applyCabinetResizeTransform(previousCabinet) {
       nextRect.height = board.thickness;
     }
 
-    board.localRect = clampLocalRect(nextRect);
+    board.localRect = clampBoardRectByOrientation(board, nextRect);
     board.growthOrigin = {
       x: board.localRect.x + board.localRect.width / 2,
       y: board.localRect.y + board.localRect.height / 2,
@@ -1802,6 +1802,31 @@ function clampLocalRect(rect) {
     width: w,
     height: h,
   };
+}
+
+function clampBoardRectByOrientation(board, rect) {
+  if (!board) return clampLocalRect(rect);
+  if (board.orientation === "vertical") {
+    const width = Math.max(0.1, Number(board.thickness) || 0.1);
+    const height = clamp(rect.height, MIN_DRAW_SIZE_MM, cabinetModel.H);
+    return {
+      x: clamp(rect.x, 0, cabinetModel.W - width),
+      y: clamp(rect.y, 0, cabinetModel.H - height),
+      width,
+      height,
+    };
+  }
+  if (board.orientation === "horizontal") {
+    const height = Math.max(0.1, Number(board.thickness) || 0.1);
+    const width = clamp(rect.width, MIN_DRAW_SIZE_MM, cabinetModel.W);
+    return {
+      x: clamp(rect.x, 0, cabinetModel.W - width),
+      y: clamp(rect.y, 0, cabinetModel.H - height),
+      width,
+      height,
+    };
+  }
+  return clampLocalRect(rect);
 }
 
 function buildSnapCandidatesLocal() {
