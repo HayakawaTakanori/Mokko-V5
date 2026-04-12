@@ -82,6 +82,18 @@ const clearanceXEl = document.getElementById("clearance-x");
 const clearanceYEl = document.getElementById("clearance-y");
 const applyWinnerBtn = document.getElementById("apply-winner-btn");
 const fabricationPolicyStateEl = document.getElementById("fabrication-policy-state");
+const sectionAxisEl = document.getElementById("section-axis-select");
+const sectionPlaneMmEl = document.getElementById("section-plane-mm");
+const sectionDeltaMmEl = document.getElementById("section-delta-mm");
+const sectionSideModeEl = document.getElementById("section-side-mode");
+const sectionUniformToggleEl = document.getElementById("section-uniform-toggle");
+const applySectionStretchBtn = document.getElementById("apply-section-stretch-btn");
+const sectionHandleLeftBtn = document.getElementById("section-handle-left");
+const sectionHandleCenterXBtn = document.getElementById("section-handle-center-x");
+const sectionHandleRightBtn = document.getElementById("section-handle-right");
+const sectionHandleTopBtn = document.getElementById("section-handle-top");
+const sectionHandleMiddleYBtn = document.getElementById("section-handle-middle-y");
+const sectionHandleBottomBtn = document.getElementById("section-handle-bottom");
 
 let stage;
 let layer;
@@ -100,6 +112,7 @@ let draftRect = null;
 let draftText = null;
 let draftRayLine = null;
 let constraintOverlay = null;
+let scalePlaneOverlay = null;
 let lastHudOperation = "move";
 const keyBuffer = { text: "" };
 const boards = [];
@@ -1632,6 +1645,142 @@ function updateGuideLineNode(guide) {
   guide.node.points(points);
 }
 
+function getSectionPlaneAxis() {
+  return sectionAxisEl?.value === "y" ? "y" : "x";
+}
+
+function buildSectionAnchorValue(axis, anchor) {
+  if (axis === "x") {
+    if (anchor === "left") return 0;
+    if (anchor === "center") return cabinetModel.W / 2;
+    if (anchor === "right") return cabinetModel.W;
+    return clamp(Number(sectionPlaneMmEl?.value || 0), 0, cabinetModel.W);
+  }
+  if (anchor === "top") return 0;
+  if (anchor === "middle") return cabinetModel.H / 2;
+  if (anchor === "bottom") return cabinetModel.H;
+  return clamp(Number(sectionPlaneMmEl?.value || 0), 0, cabinetModel.H);
+}
+
+function setSectionPlaneValue(mm) {
+  if (!sectionPlaneMmEl) return;
+  sectionPlaneMmEl.value = `${Math.round(mm * 10) / 10}`;
+  updateSectionPlanePreview();
+}
+
+function getSectionPlaneValue() {
+  if (!sectionPlaneMmEl) return 0;
+  const parsed = Number(sectionPlaneMmEl.value);
+  const max = getSectionPlaneAxis() === "y" ? cabinetModel.H : cabinetModel.W;
+  if (!Number.isFinite(parsed)) return clamp(max / 2, 0, max);
+  return clamp(parsed, 0, max);
+}
+
+function updateSectionPlanePreview() {
+  if (!layer) return;
+  if (!scalePlaneOverlay) {
+    scalePlaneOverlay = new Konva.Line({
+      stroke: "#ef4444",
+      strokeWidth: 1.5,
+      dash: [4, 4],
+      listening: false,
+      visible: false,
+      opacity: 0.8,
+    });
+    layer.add(scalePlaneOverlay);
+  }
+  const axis = getSectionPlaneAxis();
+  const value = getSectionPlaneValue();
+  if (axis === "x") {
+    const p1 = localToStagePoint({ x: value, y: 0 });
+    const p2 = localToStagePoint({ x: value, y: cabinetModel.H });
+    scalePlaneOverlay.points([p1.x, p1.y, p2.x, p2.y]);
+  } else {
+    const p1 = localToStagePoint({ x: 0, y: value });
+    const p2 = localToStagePoint({ x: cabinetModel.W, y: value });
+    scalePlaneOverlay.points([p1.x, p1.y, p2.x, p2.y]);
+  }
+  scalePlaneOverlay.visible(true);
+  scalePlaneOverlay.moveToTop();
+  layer.batchDraw();
+}
+
+function moveGuideBySectionPlane(guide, axis, plane, delta, sideMode, uniform) {
+  if (!guide) return;
+  const guideAxis = guide.orientation === "vertical" ? "x" : "y";
+  if (guideAxis !== axis) return;
+  const signedDelta = uniform ? (guide.value >= plane ? delta : -delta) : sideMode === "negative" ? (guide.value <= plane ? delta : 0) : guide.value >= plane ? delta : 0;
+  if (Math.abs(signedDelta) < 0.001) return;
+  const max = axis === "x" ? cabinetModel.W : cabinetModel.H;
+  guide.value = clamp(guide.value + signedDelta, 0, max);
+  if (!isParametricExpression(guide.expr)) {
+    guide.expr = formatMm(guide.value);
+  }
+  updateGuideLineNode(guide);
+}
+
+function moveBoardBySectionPlane(board, axis, plane, delta, sideMode, uniform) {
+  if (!board?.localRect) return;
+  const rect = { ...board.localRect };
+  if (axis === "x") {
+    const left = rect.x;
+    const right = rect.x + rect.width;
+    if (uniform) {
+      const offset = right <= plane ? -delta : left >= plane ? delta : 0;
+      if (Math.abs(offset) > 0.001) rect.x += offset;
+    } else if (sideMode === "positive") {
+      if (left >= plane) rect.x += delta;
+    } else if (right <= plane) {
+      rect.x += delta;
+    }
+  } else {
+    const top = rect.y;
+    const bottom = rect.y + rect.height;
+    if (uniform) {
+      const offset = bottom <= plane ? -delta : top >= plane ? delta : 0;
+      if (Math.abs(offset) > 0.001) rect.y += offset;
+    } else if (sideMode === "positive") {
+      if (top >= plane) rect.y += delta;
+    } else if (bottom <= plane) {
+      rect.y += delta;
+    }
+  }
+  board.localRect = clampBoardRectByOrientation(board, rect);
+  board.growthOrigin = {
+    x: board.localRect.x + board.localRect.width / 2,
+    y: board.localRect.y + board.localRect.height / 2,
+  };
+  syncBoardFormulasFromRect(board);
+  applyPlacementMeta(board);
+  applyLocalRectToNode(board, board.localRect);
+}
+
+function applySectionPlaneStretch() {
+  const axis = getSectionPlaneAxis();
+  const plane = getSectionPlaneValue();
+  const delta = Number(sectionDeltaMmEl?.value || 0);
+  const sideMode = sectionSideModeEl?.value === "negative" ? "negative" : "positive";
+  const uniform = !!sectionUniformToggleEl?.checked;
+  if (!Number.isFinite(delta) || Math.abs(delta) < 0.001) {
+    refreshFabricationPolicyState("断面平面伸縮: Δ(mm) を入力してください。");
+    return;
+  }
+  const accepted = runWithPropagationGuard(null, () => {
+    boards.forEach((board) => moveBoardBySectionPlane(board, axis, plane, delta, sideMode, uniform));
+    guideLines.forEach((guide) => moveGuideBySectionPlane(guide, axis, plane, delta, sideMode, uniform));
+  });
+  if (!accepted) {
+    refreshFabricationPolicyState("断面平面伸縮をロールバック: 非重なり条件を満たせませんでした。");
+    updateSectionPlanePreview();
+    return;
+  }
+  updatePartsList();
+  refreshHud();
+  updateSectionPlanePreview();
+  refreshFabricationPolicyState(`断面平面伸縮を適用: axis=${axis} plane=${formatMm(plane)} Δ=${formatMm(delta)}${uniform ? " (均等)" : ""}`);
+  layer.batchDraw();
+}
+
 function clearGuides() {
   guideLines.forEach((guide) => {
     if (guide.node) guide.node.destroy();
@@ -3007,6 +3156,23 @@ function initStage() {
       applyWinnerPreferenceForSelected();
     });
   }
+  const bindSectionAnchor = (btn, axis, anchor) => {
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      if (sectionAxisEl) sectionAxisEl.value = axis;
+      setSectionPlaneValue(buildSectionAnchorValue(axis, anchor));
+      updateSectionPlanePreview();
+    });
+  };
+  bindSectionAnchor(sectionHandleLeftBtn, "x", "left");
+  bindSectionAnchor(sectionHandleCenterXBtn, "x", "center");
+  bindSectionAnchor(sectionHandleRightBtn, "x", "right");
+  bindSectionAnchor(sectionHandleTopBtn, "y", "top");
+  bindSectionAnchor(sectionHandleMiddleYBtn, "y", "middle");
+  bindSectionAnchor(sectionHandleBottomBtn, "y", "bottom");
+  if (sectionAxisEl) sectionAxisEl.addEventListener("change", updateSectionPlanePreview);
+  if (sectionPlaneMmEl) sectionPlaneMmEl.addEventListener("input", updateSectionPlanePreview);
+  if (applySectionStretchBtn) applySectionStretchBtn.addEventListener("click", () => applySectionPlaneStretch());
   modeSelectEl.addEventListener("change", () => {
     isDrawing = false;
     guideDragStart = null;

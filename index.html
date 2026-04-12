@@ -269,6 +269,49 @@
         </div>
         <div class="controls">
           <label>
+            断面平面方向
+            <select id="section-axis-select">
+              <option value="x">X（左右）</option>
+              <option value="y">Y（上下）</option>
+            </select>
+          </label>
+          <div class="control-grid" style="margin-top: 8px">
+            <button id="section-handle-left" type="button">左</button>
+            <button id="section-handle-center-x" type="button">中央X</button>
+            <button id="section-handle-right" type="button">右</button>
+          </div>
+          <div class="control-grid" style="margin-top: 8px">
+            <button id="section-handle-top" type="button">上</button>
+            <button id="section-handle-middle-y" type="button">中央Y</button>
+            <button id="section-handle-bottom" type="button">下</button>
+          </div>
+          <div class="control-grid" style="margin-top: 8px">
+            <label>
+              断面位置 (mm)
+              <input id="section-plane-mm" type="number" value="450" step="1" />
+            </label>
+            <label>
+              伸縮量 Δ(mm)
+              <input id="section-delta-mm" type="number" value="50" step="1" />
+            </label>
+          </div>
+          <div class="control-grid" style="margin-top: 8px">
+            <label>
+              非均等時の移動側
+              <select id="section-side-mode">
+                <option value="positive">右/下側を移動</option>
+                <option value="negative">左/上側を移動</option>
+              </select>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; margin-top: 22px">
+              <input id="section-uniform-toggle" type="checkbox" />
+              均等伸縮（左右/上下対称）
+            </label>
+          </div>
+          <button id="apply-section-stretch-btn" type="button">断面平面伸縮を適用</button>
+        </div>
+        <div class="controls">
+          <label>
             原板最大長さ (mm)
             <input id="max-stock-length" type="number" value="2400" min="100" />
           </label>
@@ -301,6 +344,7 @@
           <li>外寸入力 + ボタン: 既存部材を維持して再計算</li>
           <li>テンプレート選択: 板構成ルール切替</li>
           <li>補助線モード: 辺を掴んで離すと平行補助線を作成</li>
+          <li>断面平面伸縮: 左/中央/右・上/中/下 または自由位置で局所伸縮</li>
           <li>ドラッグ: 新規板作成（板厚自動 + 自動スナップ）</li>
           <li>勝ち負け: 部材選択後「選択部材を勝ちにする」を押す（原板制約優先で非結合）</li>
           <li>クリック: 板を選択、ドラッグで移動</li>
