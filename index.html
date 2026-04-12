@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>2D-WoodBase Prototype</title>
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --panel: #ffffff;
+        --line: #d1d5db;
+        --text: #111827;
+        --muted: #6b7280;
+        --accent: #2563eb;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Inter", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+        color: var(--text);
+        background: var(--bg);
+      }
+
+      .app {
+        display: flex;
+        min-height: 100vh;
+      }
+
+      .canvas-area {
+        flex: 1;
+        padding: 16px;
+      }
+
+      .canvas-shell {
+        position: relative;
+        width: 100%;
+        height: calc(100vh - 32px);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        overflow: hidden;
+      }
+
+      #stage-container {
+        width: 100%;
+        height: 100%;
+        cursor: crosshair;
+      }
+
+      .hud {
+        position: absolute;
+        left: 16px;
+        top: 16px;
+        z-index: 20;
+        min-width: 250px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #bfdbfe;
+        background: rgba(239, 246, 255, 0.94);
+        font-size: 12px;
+      }
+
+      .hud strong {
+        font-size: 13px;
+      }
+
+      .hud code {
+        display: inline-flex;
+        margin-top: 4px;
+        padding: 2px 6px;
+        border-radius: 5px;
+        background: #dbeafe;
+      }
+
+      .sidebar {
+        width: 340px;
+        border-left: 1px solid var(--line);
+        background: var(--panel);
+        padding: 20px 18px;
+      }
+
+      .controls {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 12px;
+        background: #f9fafb;
+      }
+
+      .control-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .control-grid label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .control-grid input,
+      .controls select {
+        width: 100%;
+        margin-top: 4px;
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font-size: 13px;
+        background: #fff;
+      }
+
+      .controls button {
+        margin-top: 10px;
+        width: 100%;
+        padding: 8px 10px;
+        border: 0;
+        border-radius: 6px;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .sidebar h1 {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      .sidebar p {
+        margin: 8px 0 18px;
+        color: var(--muted);
+        line-height: 1.6;
+        font-size: 13px;
+      }
+
+      .meta {
+        margin: 0 0 10px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      .parts-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .part-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #fff;
+      }
+
+      .part-title {
+        margin: 0 0 8px;
+        font-weight: 600;
+      }
+
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 13px;
+      }
+
+      .row + .row {
+        margin-top: 4px;
+      }
+
+      .empty {
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .badge {
+        display: inline-flex;
+        margin-top: 10px;
+        padding: 4px 8px;
+        font-size: 12px;
+        border-radius: 9999px;
+        color: #1e3a8a;
+        background: #dbeafe;
+      }
+
+      .keys {
+        margin: 12px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .keys li + li {
+        margin-top: 4px;
+      }
+
+      .summary {
+        margin-top: 14px;
+      }
+
+      .summary h2 {
+        margin: 0 0 8px;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <section class="canvas-area">
+        <div class="canvas-shell">
+          <div id="hud" class="hud">
+            <strong>Relative Input HUD</strong><br />
+            移動中/リサイズ後に <code>+30</code> や <code>-3</code> を入力し Enter で反映
+            <div id="hud-state"></div>
+          </div>
+          <div id="stage-container"></div>
+        </div>
+      </section>
+      <aside class="sidebar">
+        <h1>2D-WoodBase / パーツリスト</h1>
+        <div class="controls">
+          <div class="control-grid">
+            <label>
+              幅 W (mm)
+              <input id="cabinet-width" type="number" value="900" min="100" />
+            </label>
+            <label>
+              高さ H (mm)
+              <input id="cabinet-height" type="number" value="720" min="100" />
+            </label>
+            <label style="grid-column: span 2">
+              奥行 D (mm)
+              <input id="cabinet-depth" type="number" value="450" min="100" />
+            </label>
+          </div>
+          <button id="apply-cabinet-btn" type="button">外寸変更を適用（既存部材を再計算）</button>
+        </div>
+        <div class="controls">
+          <label>
+            部材テンプレート
+            <select id="template-select">
+              <option value="sidePanel">側板</option>
+              <option value="topPanel">天板</option>
+              <option value="bottomPanel">地板</option>
+              <option value="shelfPanel">棚板</option>
+              <option value="doorPanel">扉</option>
+              <option value="drawerFrontPanel">引き出し前板</option>
+              <option value="backPanel">背板</option>
+            </select>
+          </label>
+        </div>
+        <div class="controls">
+          <label>
+            操作モード
+            <select id="draw-mode-select">
+              <option value="part">部材配置モード</option>
+              <option value="guide">補助線モード</option>
+            </select>
+          </label>
+        </div>
+        <div class="controls">
+          <label>
+            断面平面方向
+            <select id="section-axis-select">
+              <option value="x">X（左右）</option>
+              <option value="y">Y（上下）</option>
+            </select>
+          </label>
+          <div class="control-grid" style="margin-top: 8px">
+            <button id="section-handle-left" type="button">左</button>
+            <button id="section-handle-center-x" type="button">中央X</button>
+            <button id="section-handle-right" type="button">右</button>
+          </div>
+          <div class="control-grid" style="margin-top: 8px">
+            <button id="section-handle-top" type="button">上</button>
+            <button id="section-handle-middle-y" type="button">中央Y</button>
+            <button id="section-handle-bottom" type="button">下</button>
+          </div>
+          <div class="control-grid" style="margin-top: 8px">
+            <label>
+              断面位置 (mm)
+              <input id="section-plane-mm" type="number" value="450" step="1" />
+            </label>
+            <label>
+              伸縮量 Δ(mm)
+              <input id="section-delta-mm" type="number" value="50" step="1" />
+            </label>
+          </div>
+          <div class="control-grid" style="margin-top: 8px">
+            <label>
+              非均等時の移動側
+              <select id="section-side-mode">
+                <option value="positive">右/下側を移動</option>
+                <option value="negative">左/上側を移動</option>
+              </select>
+            </label>
+            <label style="display: flex; align-items: center; gap: 8px; margin-top: 22px">
+              <input id="section-uniform-toggle" type="checkbox" />
+              均等伸縮（左右/上下対称）
+            </label>
+          </div>
+          <button id="apply-section-stretch-btn" type="button">断面平面伸縮を適用</button>
+        </div>
+        <div class="controls">
+          <label>
+            原板最大長さ (mm)
+            <input id="max-stock-length" type="number" value="2400" min="100" />
+          </label>
+          <div class="control-grid" style="margin-top: 8px">
+            <label>
+              クリアランスX (mm)
+              <input id="clearance-x" type="number" value="0" min="0" step="0.5" />
+            </label>
+            <label>
+              クリアランスY (mm)
+              <input id="clearance-y" type="number" value="0" min="0" step="0.5" />
+            </label>
+          </div>
+          <p class="meta" id="fabrication-policy-state">結合ポリシー: -</p>
+        </div>
+        <p>先に外寸で正面枠を描き、その中へテンプレート部材をドラッグ配置します。</p>
+        <p class="meta">標準は厚み表示。例外は 扉・引き出し前板・背板を面表示で扱います。</p>
+        <div id="parts-list" class="parts-list">
+          <div class="empty">まだ部材がありません。左のキャンバスで矩形を描画してください。</div>
+        </div>
+        <div class="summary">
+          <h2>必要枚数サマリ</h2>
+          <div id="summary-list" class="parts-list">
+            <div class="empty">部材を配置すると枚数が集計されます。</div>
+          </div>
+        </div>
+        <span class="badge">Shapr3D/SketchUp ライク試作</span>
+        <ul class="keys">
+          <li>外寸入力 + ボタン: 既存部材を維持して再計算</li>
+          <li>テンプレート選択: 板構成ルール切替</li>
+          <li>補助線モード: 辺を掴んで離すと平行補助線を作成</li>
+          <li>断面平面伸縮: 左/中央/右・上/中/下 または自由位置で局所伸縮</li>
+          <li>ドラッグ: 新規板作成（板厚自動 + 自動スナップ）</li>
+          <li>衝突点マーカー: クリックで「こちら/相手」どちらをのばすか選択</li>
+          <li>クリック: 板を選択、ドラッグで移動</li>
+          <li>角ハンドル: リサイズ</li>
+          <li>キー入力: <code>+30</code>, <code>-5</code>, Enter で相対調整</li>
+        </ul>
+      </aside>
+    </main>
+
+    <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <script src="./script.js"></script>
+  </body>
+</html>
