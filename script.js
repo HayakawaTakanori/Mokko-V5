@@ -364,6 +364,80 @@ function applyMoveAxisConstraint(nextRect, baseRect, orientation) {
   return nextRect;
 }
 
+function clampDragRectByCollision(board, baseRect, desiredRect) {
+  if (!board || !baseRect || !desiredRect) return desiredRect;
+  if (board.orientation !== "vertical" && board.orientation !== "horizontal") return desiredRect;
+  const pad = getBoardPadding(board);
+  const eps = 0.01;
+  const clamped = { ...desiredRect };
+
+  if (board.orientation === "vertical") {
+    const startX = baseRect.x;
+    const targetX = desiredRect.x;
+    const top = desiredRect.y - pad.y;
+    const bottom = desiredRect.y + desiredRect.height + pad.y;
+
+    if (targetX > startX + eps) {
+      let limit = targetX;
+      boards.forEach((other) => {
+        if (other.id === board.id) return;
+        const obstacle = getBoardCollisionRect(other);
+        if (bottom <= obstacle.y + eps || top >= obstacle.y + obstacle.height - eps) return;
+        const barrier = obstacle.x - (desiredRect.width + pad.x);
+        if (startX < barrier && targetX >= barrier) {
+          limit = Math.min(limit, barrier - eps);
+        }
+      });
+      clamped.x = Math.max(startX, limit);
+    } else if (targetX < startX - eps) {
+      let limit = targetX;
+      boards.forEach((other) => {
+        if (other.id === board.id) return;
+        const obstacle = getBoardCollisionRect(other);
+        if (bottom <= obstacle.y + eps || top >= obstacle.y + obstacle.height - eps) return;
+        const barrier = obstacle.x + obstacle.width + pad.x;
+        if (startX > barrier && targetX <= barrier) {
+          limit = Math.max(limit, barrier + eps);
+        }
+      });
+      clamped.x = Math.min(startX, limit);
+    }
+    return clampLocalRect(clamped);
+  }
+
+  const startY = baseRect.y;
+  const targetY = desiredRect.y;
+  const left = desiredRect.x - pad.x;
+  const right = desiredRect.x + desiredRect.width + pad.x;
+
+  if (targetY > startY + eps) {
+    let limit = targetY;
+    boards.forEach((other) => {
+      if (other.id === board.id) return;
+      const obstacle = getBoardCollisionRect(other);
+      if (right <= obstacle.x + eps || left >= obstacle.x + obstacle.width - eps) return;
+      const barrier = obstacle.y - (desiredRect.height + pad.y);
+      if (startY < barrier && targetY >= barrier) {
+        limit = Math.min(limit, barrier - eps);
+      }
+    });
+    clamped.y = Math.max(startY, limit);
+  } else if (targetY < startY - eps) {
+    let limit = targetY;
+    boards.forEach((other) => {
+      if (other.id === board.id) return;
+      const obstacle = getBoardCollisionRect(other);
+      if (right <= obstacle.x + eps || left >= obstacle.x + obstacle.width - eps) return;
+      const barrier = obstacle.y + obstacle.height + pad.y;
+      if (startY > barrier && targetY <= barrier) {
+        limit = Math.max(limit, barrier + eps);
+      }
+    });
+    clamped.y = Math.min(startY, limit);
+  }
+  return clampLocalRect(clamped);
+}
+
 function isFiniteRect(rect) {
   return (
     rect &&
@@ -2113,7 +2187,8 @@ function createBoardNode(board) {
       x: snapped.x,
       y: snapped.y,
     });
-    const nextRect = applyMoveAxisConstraint(rawRect, board.localRect, board.orientation);
+    const axisRect = applyMoveAxisConstraint(rawRect, board.localRect, board.orientation);
+    const nextRect = clampDragRectByCollision(board, board.localRect, axisRect);
     const accepted = runWithPropagationGuard(board.id, () => {
       board.localRect = nextRect;
       applyPlacementMeta(board);
