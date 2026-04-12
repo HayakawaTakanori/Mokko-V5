@@ -1432,8 +1432,71 @@ function recalcAllBoardsFromZero(sourceBoardId = null) {
   return !hasAnyBoardOverlap();
 }
 
-function recalcBoardsAfterParentResize() {
+function isParametricExpression(expr) {
+  if (typeof expr !== "string") return false;
+  return /\$[A-Za-z_]+/.test(expr) || /part-\d+/.test(expr);
+}
+
+function scaleValueByRatio(value, ratio, max) {
+  if (!Number.isFinite(value) || !Number.isFinite(ratio) || ratio <= 0) return value;
+  return clamp(value * ratio, 0, max);
+}
+
+function applyCabinetResizeTransform(previousCabinet) {
+  if (!previousCabinet || !Number.isFinite(previousCabinet.W) || !Number.isFinite(previousCabinet.H)) return;
+  if (previousCabinet.W <= 0 || previousCabinet.H <= 0) return;
+  if (boards.length === 0) return;
+
+  const ratioX = cabinetModel.W / previousCabinet.W;
+  const ratioY = cabinetModel.H / previousCabinet.H;
+
+  boards.forEach((board) => {
+    if (!board?.localRect) return;
+    const prevRect = { ...board.localRect };
+    const nextRect = { ...prevRect };
+    const fromFormulaRect = resolveBoardRectFromFormulas(board);
+    const formulaX = isParametricExpression(board.positionFormulas?.x);
+    const formulaY = isParametricExpression(board.positionFormulas?.y);
+    const formulaW = isParametricExpression(board.positionFormulas?.w);
+    const formulaH = isParametricExpression(board.positionFormulas?.h);
+
+    nextRect.x = formulaX ? fromFormulaRect.x : scaleValueByRatio(prevRect.x, ratioX, cabinetModel.W);
+    nextRect.y = formulaY ? fromFormulaRect.y : scaleValueByRatio(prevRect.y, ratioY, cabinetModel.H);
+    nextRect.width = formulaW ? fromFormulaRect.width : prevRect.width * ratioX;
+    nextRect.height = formulaH ? fromFormulaRect.height : prevRect.height * ratioY;
+
+    if (board.orientation === "vertical") {
+      nextRect.width = board.thickness;
+    } else if (board.orientation === "horizontal") {
+      nextRect.height = board.thickness;
+    }
+
+    board.localRect = clampLocalRect(nextRect);
+    board.growthOrigin = {
+      x: board.localRect.x + board.localRect.width / 2,
+      y: board.localRect.y + board.localRect.height / 2,
+    };
+    applyPlacementMeta(board);
+    applyLocalRectToNode(board, board.localRect);
+  });
+
+  guideLines.forEach((guide) => {
+    if (!guide) return;
+    if (guide.orientation === "vertical") {
+      guide.value = clamp(guide.value * ratioX, 0, cabinetModel.W);
+    } else {
+      guide.value = clamp(guide.value * ratioY, 0, cabinetModel.H);
+    }
+    if (!isParametricExpression(guide.expr)) {
+      guide.expr = formatMm(guide.value);
+    }
+    updateGuideLineNode(guide);
+  });
+}
+
+function recalcBoardsAfterParentResize(previousCabinet = null) {
   const snapshot = snapshotBoardsState();
+  applyCabinetResizeTransform(previousCabinet);
   recalcAllBoardsFromZero();
 
   if (hasAnyBoardOverlap()) {
@@ -1672,6 +1735,7 @@ function clearBoards() {
 }
 
 function drawCabinetFrame(resetBoards = false) {
+  const previousCabinet = { W: cabinetModel.W, H: cabinetModel.H, D: cabinetModel.D };
   cabinetModel.W = parseInputValue(cabinetWidthEl, cabinetModel.W);
   cabinetModel.H = parseInputValue(cabinetHeightEl, cabinetModel.H);
   cabinetModel.D = parseInputValue(cabinetDepthEl, cabinetModel.D);
@@ -1714,7 +1778,7 @@ function drawCabinetFrame(resetBoards = false) {
   if (resetBoards) {
     clearBoards();
   } else {
-    resizeAccepted = recalcBoardsAfterParentResize();
+    resizeAccepted = recalcBoardsAfterParentResize(previousCabinet);
     updatePartsList();
     refreshHud();
     if (!resizeAccepted) {
