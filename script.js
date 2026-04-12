@@ -80,7 +80,6 @@ const modeSelectEl = document.getElementById("draw-mode-select");
 const maxStockLengthEl = document.getElementById("max-stock-length");
 const clearanceXEl = document.getElementById("clearance-x");
 const clearanceYEl = document.getElementById("clearance-y");
-const applyWinnerBtn = document.getElementById("apply-winner-btn");
 const fabricationPolicyStateEl = document.getElementById("fabrication-policy-state");
 const sectionAxisEl = document.getElementById("section-axis-select");
 const sectionPlaneMmEl = document.getElementById("section-plane-mm");
@@ -118,7 +117,6 @@ const keyBuffer = { text: "" };
 const boards = [];
 const guideLines = [];
 const junctionMarkers = [];
-const junctionModeByKey = {};
 const halfLapPairKeys = new Set();
 let guideCounter = 1;
 let boardCounter = 1;
@@ -583,28 +581,6 @@ function classifyJunctionKind(a, b) {
   return "L";
 }
 
-function getJunctionKey(junction) {
-  const ids = [junction.aId, junction.bId].sort();
-  return `${junction.kind}:${ids[0]}:${ids[1]}`;
-}
-
-function getJunctionModes(kind) {
-  if (kind === "X") return ["vertical-wins", "horizontal-wins", "half-lap"];
-  if (kind === "T") return ["a-pass", "b-pass"];
-  return ["a-wins", "b-wins"];
-}
-
-function getJunctionModeLabel(mode) {
-  if (mode === "a-wins") return "A>";
-  if (mode === "b-wins") return "B>";
-  if (mode === "a-pass") return "A通";
-  if (mode === "b-pass") return "B通";
-  if (mode === "vertical-wins") return "縦勝";
-  if (mode === "horizontal-wins") return "横勝";
-  if (mode === "half-lap") return "相欠";
-  return "?";
-}
-
 function buildJunctions() {
   const junctions = [];
   for (let i = 0; i < boards.length; i += 1) {
@@ -626,91 +602,6 @@ function buildJunctions() {
   return junctions;
 }
 
-function buildFixedBoundaryRef(value) {
-  return {
-    value,
-    expr: formatMm(value),
-    sourceType: "fixed",
-    sourceId: "fixed",
-    edge: "line",
-  };
-}
-
-function getContactBoundaryFromWinner(winner, loser, axis) {
-  if (axis === "vertical") {
-    const winnerMid = winner.localRect.y + winner.localRect.height / 2;
-    const loserMid = loser.localRect.y + loser.localRect.height / 2;
-    if (loserMid < winnerMid) {
-      return {
-        edge: "max",
-        value: winner.localRect.y,
-        expr: getBoardBoundaryExpr(winner, "vertical", "min"),
-        sourceType: "part",
-        sourceId: winner.id,
-      };
-    }
-    return {
-      edge: "min",
-      value: winner.localRect.y + winner.localRect.height,
-      expr: getBoardBoundaryExpr(winner, "vertical", "max"),
-      sourceType: "part",
-      sourceId: winner.id,
-    };
-  }
-
-  const winnerMid = winner.localRect.x + winner.localRect.width / 2;
-  const loserMid = loser.localRect.x + loser.localRect.width / 2;
-  if (loserMid < winnerMid) {
-    return {
-      edge: "max",
-      value: winner.localRect.x,
-      expr: getBoardBoundaryExpr(winner, "horizontal", "min"),
-      sourceType: "part",
-      sourceId: winner.id,
-    };
-  }
-  return {
-    edge: "min",
-    value: winner.localRect.x + winner.localRect.width,
-    expr: getBoardBoundaryExpr(winner, "horizontal", "max"),
-    sourceType: "part",
-    sourceId: winner.id,
-  };
-}
-
-function applyWinnerAgainstBoard(winner, loser) {
-  const axis = loser.orientation === "vertical" ? "vertical" : loser.orientation === "horizontal" ? "horizontal" : null;
-  if (!axis) return false;
-
-  const boundary = getContactBoundaryFromWinner(winner, loser, axis);
-  if (!boundary) return false;
-
-  const next = { ...loser.localRect };
-  if (axis === "vertical") {
-    if (boundary.edge === "max") {
-      next.height = Math.max(MIN_DRAW_SIZE_MM, boundary.value - next.y);
-    } else {
-      const bottom = next.y + next.height;
-      next.y = boundary.value;
-      next.height = Math.max(MIN_DRAW_SIZE_MM, bottom - boundary.value);
-    }
-  } else {
-    if (boundary.edge === "max") {
-      next.width = Math.max(MIN_DRAW_SIZE_MM, boundary.value - next.x);
-    } else {
-      const right = next.x + next.width;
-      next.x = boundary.value;
-      next.width = Math.max(MIN_DRAW_SIZE_MM, right - boundary.value);
-    }
-  }
-  loser.localRect = clampBoardRectByOrientation(loser, next);
-  applyPlacementMeta(loser);
-  syncBoardFormulasFromRect(loser);
-  loser.hitTargetIds = [...new Set([...(normalizeHitTargetIds(loser) || []), winner.id])];
-  applyLocalRectToNode(loser, loser.localRect);
-  return true;
-}
-
 function syncBoardFormulasFromRect(board) {
   if (!board) return;
   if (board.orientation === "vertical") {
@@ -728,12 +619,58 @@ function syncBoardFormulasFromRect(board) {
   }
 }
 
+function moveBoardAfter(anchorBoard, movedBoard) {
+  if (!anchorBoard || !movedBoard || anchorBoard.id === movedBoard.id) return;
+  const anchorIndex = boards.findIndex((item) => item.id === anchorBoard.id);
+  const movedIndex = boards.findIndex((item) => item.id === movedBoard.id);
+  if (anchorIndex < 0 || movedIndex < 0) return;
+  const [picked] = boards.splice(movedIndex, 1);
+  const nextAnchorIndex = boards.findIndex((item) => item.id === anchorBoard.id);
+  const insertIndex = nextAnchorIndex + 1;
+  boards.splice(insertIndex, 0, picked);
+}
+
+function applyCollisionMarkerAction(junction) {
+  if (!junction || typeof window === "undefined" || typeof window.confirm !== "function") return;
+  const a = boards.find((item) => item.id === junction.aId);
+  const b = boards.find((item) => item.id === junction.bId);
+  if (!a || !b) return;
+  const first = window.confirm(
+    `衝突を検出しました。\nこちら(${a.name})をのばしますか？\nキャンセルで相手側(${b.name})を変更します。`
+  );
+  if (!first) {
+    const second = window.confirm(`相手側(${b.name})を変更しますか？`);
+    if (!second) return;
+  }
+  const source = first ? a : b;
+  const opponent = first ? b : a;
+  const accepted = runWithPropagationGuard(null, () => {
+    extendBoardTowardOpponentByLength(source, opponent);
+    source.hitTargetIds = [...new Set([...(normalizeHitTargetIds(source) || []), opponent.id])];
+    syncBoardFormulasFromRect(source);
+    applyPlacementMeta(source);
+    moveBoardAfter(opponent, source);
+  });
+  if (!accepted) {
+    refreshFabricationPolicyState("衝突伸長をロールバック: 非重なり条件を満たせませんでした。");
+    return;
+  }
+  updatePartsList();
+  refreshHud();
+  refreshJunctionMarkers();
+  layer.batchDraw();
+  refreshFabricationPolicyState(
+    `衝突伸長を適用: ${source.name} を伸長 / ${opponent.name} を基準に再計算・再配置`
+  );
+}
+
 function extendBoardTowardOpponentByLength(board, opponent) {
   if (!board || !opponent) return false;
   const axis = board.orientation === "vertical" ? "vertical" : board.orientation === "horizontal" ? "horizontal" : null;
   if (!axis) return false;
 
-  const extendLength = Math.max(MIN_DRAW_SIZE_MM, getActualLengthMm(opponent));
+  const extendLength = Number.isFinite(opponent.thickness) ? Math.max(0, opponent.thickness) : 0;
+  if (extendLength <= 0) return false;
   const next = { ...board.localRect };
   if (axis === "horizontal") {
     const boardMid = board.localRect.x + board.localRect.width / 2;
@@ -767,48 +704,6 @@ function extendBoardTowardOpponentByLength(board, opponent) {
   return true;
 }
 
-function setLoserGrowthOriginFromZeroToCollision(winner, loser) {
-  if (!winner || !loser) return false;
-  const axis = loser.orientation === "vertical" ? "vertical" : loser.orientation === "horizontal" ? "horizontal" : null;
-  if (!axis) return false;
-  const resetRect = { ...loser.localRect };
-  if (axis === "horizontal") {
-    resetRect.x = 0;
-  } else {
-    resetRect.y = 0;
-  }
-  loser.localRect = clampBoardRectByOrientation(loser, resetRect);
-  syncBoardFormulasFromRect(loser);
-  loser.hitTargetIds = [...new Set([...(normalizeHitTargetIds(loser) || []), winner.id])];
-  return true;
-}
-
-function applyWinnerPreferenceForSelected() {
-  const winner = getBoardByNode(selectedNode);
-  if (!winner) {
-    refreshFabricationPolicyState("先に部材を選択してください。");
-    return;
-  }
-  const intersecting = findIntersectingBoards(winner);
-  if (intersecting.length === 0) {
-    refreshFabricationPolicyState("交差部材なし: 勝ち負け変更対象がありません。");
-    return;
-  }
-
-  const accepted = runWithPropagationGuard(null, () => {
-    intersecting.forEach((loser) => {
-      applyWinnerAgainstBoard(winner, loser);
-    });
-  });
-  if (!accepted) {
-    refreshFabricationPolicyState("勝ち負け変更をロールバック: 非重なり条件を満たせませんでした。");
-    return;
-  }
-  updatePartsList();
-  refreshHud();
-  layer.batchDraw();
-  refreshFabricationPolicyState(`勝ち変更適用: ${winner.name} を勝ち / 対象 ${intersecting.length} 部材`);
-}
 
 function splitTargetByPasser(targetBoard, passerBoard) {
   if (!targetBoard || !passerBoard) return false;
@@ -947,55 +842,6 @@ function tryMergeAdjacentBoards() {
   return false;
 }
 
-function applyJunctionMode(junction, mode, previousMode = null) {
-  const a = boards.find((item) => item.id === junction.aId);
-  const b = boards.find((item) => item.id === junction.bId);
-  if (!a || !b) return;
-  const halfLapKey = [a.id, b.id].sort().join("|");
-  halfLapPairKeys.delete(halfLapKey);
-
-  if (junction.kind === "L") {
-    const winner = mode === "a-wins" ? a : b;
-    const loser = winner === a ? b : a;
-    const prevWinner = previousMode === "a-wins" ? a : previousMode === "b-wins" ? b : null;
-    const prevLoser = prevWinner ? (prevWinner === a ? b : a) : null;
-    if (prevLoser && prevLoser.id === winner.id) {
-      extendBoardTowardOpponentByLength(winner, loser);
-    }
-    if (prevWinner && prevWinner.id === loser.id) {
-      setLoserGrowthOriginFromZeroToCollision(winner, loser);
-    }
-    applyWinnerAgainstBoard(winner, loser);
-    return;
-  }
-
-  if (junction.kind === "T") {
-    if (mode === "a-pass") {
-      splitTargetByPasser(b, a);
-    } else {
-      splitTargetByPasser(a, b);
-    }
-    while (tryMergeAdjacentBoards()) {}
-    return;
-  }
-
-  if (junction.kind === "X") {
-    if (mode === "half-lap") {
-      halfLapPairKeys.add(halfLapKey);
-      return;
-    }
-    if (mode === "vertical-wins") {
-      const winner = a.orientation === "vertical" ? a : b;
-      const loser = winner === a ? b : a;
-      applyWinnerAgainstBoard(winner, loser);
-      return;
-    }
-    const winner = a.orientation === "horizontal" ? a : b;
-    const loser = winner === a ? b : a;
-    applyWinnerAgainstBoard(winner, loser);
-  }
-}
-
 function clearJunctionMarkers() {
   junctionMarkers.forEach((item) => item.destroy());
   junctionMarkers.length = 0;
@@ -1005,29 +851,11 @@ function detectJunctions() {
   return buildJunctions();
 }
 
-function getJunctionOptions(kind) {
-  return getJunctionModes(kind);
-}
-
 function refreshJunctionMarkers() {
   clearJunctionMarkers();
   const junctions = detectJunctions();
-  const labelMap = {
-    "a-wins": "A>",
-    "b-wins": "B>",
-    "a-pass": "A通",
-    "b-pass": "B通",
-    "vertical-wins": "縦勝",
-    "horizontal-wins": "横勝",
-    "half-lap": "相欠",
-  };
-
   junctions.forEach((junction) => {
-    const key = getJunctionKey(junction);
-    const options = getJunctionOptions(junction.kind);
-    if (!junctionModeByKey[key]) junctionModeByKey[key] = options[0];
     const center = localToStagePoint(junction.center);
-
     const group = new Konva.Group({ x: center.x, y: center.y, draggable: false });
     const circle = new Konva.Circle({
       radius: 11,
@@ -1042,24 +870,13 @@ function refreshJunctionMarkers() {
       align: "center",
       fontSize: 11,
       fill: "#1e3a8a",
-      text: labelMap[junctionModeByKey[key]] || "?",
+      text: "衝突",
       listening: false,
     });
     group.add(circle);
     group.add(label);
     group.on("click tap", () => {
-      const current = junctionModeByKey[key];
-      const idx = options.indexOf(current);
-      const next = options[(idx + 1 + options.length) % options.length];
-      const accepted = runWithPropagationGuard(null, () => {
-        applyJunctionMode(junction, next, current);
-        junctionModeByKey[key] = next;
-      });
-      if (!accepted) return;
-      refreshJunctionMarkers();
-      updatePartsList();
-      refreshHud();
-      layer.batchDraw();
+      applyCollisionMarkerAction(junction);
     });
     layer.add(group);
     group.moveToTop();
@@ -2908,11 +2725,6 @@ function initStage() {
       updatePartsList();
       layer.batchDraw();
       refreshFabricationPolicyState();
-    });
-  }
-  if (applyWinnerBtn) {
-    applyWinnerBtn.addEventListener("click", () => {
-      applyWinnerPreferenceForSelected();
     });
   }
   const bindSectionAnchor = (btn, axis, anchor) => {
