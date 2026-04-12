@@ -286,6 +286,12 @@ function resolvePartDimensions(part) {
   };
 }
 
+function getMaterialThicknessFormula(matId, fallback) {
+  const raw = MATERIALS[matId]?.thicknessFormula;
+  if (!raw) return `${fallback}`;
+  return normalizeDecimalComma(raw);
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -307,6 +313,24 @@ function applyMoveAxisConstraint(nextRect, baseRect, orientation) {
     return { ...nextRect, x: baseRect.x };
   }
   return nextRect;
+}
+
+function getBoardBoundaryExpr(board, axis, edge) {
+  if (!board?.positionFormulas) return edge === "min" ? "0" : "0";
+  const p = board.positionFormulas;
+  const thicknessExpr = board.thicknessFormula || `${board.thickness}`;
+  if (axis === "vertical") {
+    if (edge === "min") return p.y;
+    if (board.orientation === "horizontal") {
+      return `(${p.y}) + (${thicknessExpr})`;
+    }
+    return `(${p.y}) + (${p.h})`;
+  }
+  if (edge === "min") return p.x;
+  if (board.orientation === "vertical") {
+    return `(${p.x}) + (${thicknessExpr})`;
+  }
+  return `(${p.x}) + (${p.w})`;
 }
 
 function hasAnyBoardOverlap() {
