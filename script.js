@@ -976,9 +976,7 @@ function applyJunctionMode(junction, mode, previousMode = null) {
     if (prevWinner && prevWinner.id === loser.id) {
       setLoserGrowthOriginFromZeroToCollision(winner, loser);
     }
-    if (!previousMode || previousMode === mode) {
-      applyWinnerAgainstBoard(winner, loser);
-    }
+    applyWinnerAgainstBoard(winner, loser);
     return;
   }
 
