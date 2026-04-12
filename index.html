@@ -272,6 +272,16 @@
             原板最大長さ (mm)
             <input id="max-stock-length" type="number" value="2400" min="100" />
           </label>
+          <div class="control-grid" style="margin-top: 8px">
+            <label>
+              クリアランスX (mm)
+              <input id="clearance-x" type="number" value="0" min="0" step="0.5" />
+            </label>
+            <label>
+              クリアランスY (mm)
+              <input id="clearance-y" type="number" value="0" min="0" step="0.5" />
+            </label>
+          </div>
           <button id="apply-winner-btn" type="button">選択部材を勝ちにする（非結合）</button>
           <p class="meta" id="fabrication-policy-state">結合ポリシー: -</p>
         </div>

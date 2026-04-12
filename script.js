@@ -78,6 +78,8 @@ const cabinetDepthEl = document.getElementById("cabinet-depth");
 const applyCabinetBtn = document.getElementById("apply-cabinet-btn");
 const modeSelectEl = document.getElementById("draw-mode-select");
 const maxStockLengthEl = document.getElementById("max-stock-length");
+const clearanceXEl = document.getElementById("clearance-x");
+const clearanceYEl = document.getElementById("clearance-y");
 const applyWinnerBtn = document.getElementById("apply-winner-btn");
 const fabricationPolicyStateEl = document.getElementById("fabrication-policy-state");
 
@@ -107,6 +109,8 @@ let boardCounter = 1;
 const fabricationPolicy = {
   mergePolicy: "never",
   maxStockLength: 2400,
+  defaultClearanceX: 0,
+  defaultClearanceY: 0,
 };
 
 const cabinetModel = {
@@ -308,8 +312,32 @@ function rectsOverlap(a, b) {
   return a.x + eps < b.x + b.width && a.x + a.width > b.x + eps && a.y + eps < b.y + b.height && a.y + a.height > b.y + eps;
 }
 
-function overlapsAnyOtherBoard(candidateRect, currentBoardId) {
-  return boards.some((item) => item.id !== currentBoardId && rectsOverlap(candidateRect, item.localRect));
+function getBoardPadding(board) {
+  return {
+    x: Math.max(0, Number(board?.clearanceX ?? fabricationPolicy.defaultClearanceX) || 0),
+    y: Math.max(0, Number(board?.clearanceY ?? fabricationPolicy.defaultClearanceY) || 0),
+  };
+}
+
+function expandRectByPadding(rect, padX, padY) {
+  return {
+    x: rect.x - padX,
+    y: rect.y - padY,
+    width: rect.width + padX * 2,
+    height: rect.height + padY * 2,
+  };
+}
+
+function getBoardCollisionRect(board, rectOverride) {
+  const pad = getBoardPadding(board);
+  return expandRectByPadding(rectOverride || board.localRect, pad.x, pad.y);
+}
+
+function overlapsAnyOtherBoard(candidateRect, currentBoardId, candidatePadding) {
+  const padX = Math.max(0, Number(candidatePadding?.x ?? fabricationPolicy.defaultClearanceX) || 0);
+  const padY = Math.max(0, Number(candidatePadding?.y ?? fabricationPolicy.defaultClearanceY) || 0);
+  const candidateExpanded = expandRectByPadding(candidateRect, padX, padY);
+  return boards.some((item) => item.id !== currentBoardId && rectsOverlap(candidateExpanded, getBoardCollisionRect(item)));
 }
 
 function applyMoveAxisConstraint(nextRect, baseRect, orientation) {
@@ -320,6 +348,143 @@ function applyMoveAxisConstraint(nextRect, baseRect, orientation) {
     return { ...nextRect, x: baseRect.x };
   }
   return nextRect;
+}
+
+function isFiniteRect(rect) {
+  return (
+    rect &&
+    Number.isFinite(rect.x) &&
+    Number.isFinite(rect.y) &&
+    Number.isFinite(rect.width) &&
+    Number.isFinite(rect.height) &&
+    rect.width > 0 &&
+    rect.height > 0
+  );
+}
+
+function getObstacleRectWithClearance(board, boardIndex) {
+  if (!board || boardIndex === undefined || boardIndex === null) return null;
+  const rect = board.localRect;
+  if (!isFiniteRect(rect)) return null;
+  const pad = getBoardPadding(board);
+
+  return {
+    x: clamp(rect.x - pad.x, 0, cabinetModel.W),
+    y: clamp(rect.y - pad.y, 0, cabinetModel.H),
+    width: clamp(rect.width + pad.x * 2, MIN_DRAW_SIZE_MM, cabinetModel.W),
+    height: clamp(rect.height + pad.y * 2, MIN_DRAW_SIZE_MM, cabinetModel.H),
+    boardId: board.id,
+    boardIndex,
+  };
+}
+
+function buildRayBoundariesForBoard(axis, probeValue, boardIndexLimit, excludeBoardId) {
+  const boundaries = [];
+  const rangeEps = 0.2;
+  const pushBoundary = (value, expr, sourceType, sourceId, edge) => {
+    if (!Number.isFinite(value)) return;
+    boundaries.push({ value, expr, sourceType, sourceId, edge });
+  };
+
+  if (axis === "vertical") {
+    pushBoundary(0, "0", "parent", "parent", "min");
+    pushBoundary(cabinetModel.H, "$H", "parent", "parent", "max");
+  } else {
+    pushBoundary(0, "0", "parent", "parent", "min");
+    pushBoundary(cabinetModel.W, "$W", "parent", "parent", "max");
+  }
+
+  for (let i = 0; i < boardIndexLimit; i += 1) {
+    const board = boards[i];
+    if (!board || board.id === excludeBoardId) continue;
+    const obstacle = getObstacleRectWithClearance(board, i);
+    if (!obstacle) continue;
+    if (axis === "vertical") {
+      if (probeValue < obstacle.x - rangeEps || probeValue > obstacle.x + obstacle.width + rangeEps) continue;
+      pushBoundary(
+        obstacle.y,
+        `${formatMm(obstacle.y)}`,
+        "fixed",
+        board.id,
+        "min"
+      );
+      pushBoundary(
+        obstacle.y + obstacle.height,
+        `${formatMm(obstacle.y + obstacle.height)}`,
+        "fixed",
+        board.id,
+        "max"
+      );
+    } else {
+      if (probeValue < obstacle.y - rangeEps || probeValue > obstacle.y + obstacle.height + rangeEps) continue;
+      pushBoundary(
+        obstacle.x,
+        `${formatMm(obstacle.x)}`,
+        "fixed",
+        board.id,
+        "min"
+      );
+      pushBoundary(
+        obstacle.x + obstacle.width,
+        `${formatMm(obstacle.x + obstacle.width)}`,
+        "fixed",
+        board.id,
+        "max"
+      );
+    }
+  }
+
+  guideLines.forEach((guide) => {
+    if (axis === "vertical" && guide.orientation === "horizontal") {
+      pushBoundary(guide.value, guide.expr, "guide", guide.id, "line");
+    }
+    if (axis === "horizontal" && guide.orientation === "vertical") {
+      pushBoundary(guide.value, guide.expr, "guide", guide.id, "line");
+    }
+  });
+
+  return boundaries.sort((a, b) => a.value - b.value);
+}
+
+function buildTracePlacementForBoard(start, current, templateId, orientationOverride, boardIndexLimit, excludeBoardId) {
+  const orientation = resolveTemplateOrientation(templateId, start, current, null, orientationOverride);
+  const raw = normalizeRect(start, current);
+  const base = applyTemplateThickness(raw, start, current, templateId, orientation);
+  if (orientation !== "vertical" && orientation !== "horizontal") {
+    return { localRect: base, orientation, traceMeta: null };
+  }
+
+  if (orientation === "vertical") {
+    const probeX = clamp(base.x + base.width / 2, 0, cabinetModel.W);
+    const seedY = clamp((start.y + current.y) / 2, 0, cabinetModel.H);
+    const hits = raycastBidirectional(buildRayBoundariesForBoard("vertical", probeX, boardIndexLimit, excludeBoardId), seedY);
+    const expanded = clampLocalRect({
+      x: base.x,
+      y: hits.negative.value,
+      width: base.width,
+      height: hits.positive.value - hits.negative.value,
+    });
+    return {
+      localRect: expanded,
+      orientation,
+      traceMeta: { axis: "vertical", probe: probeX, negative: hits.negative, positive: hits.positive },
+    };
+  }
+
+  const probeY = clamp(base.y + base.height / 2, 0, cabinetModel.H);
+  const seedX = clamp((start.x + current.x) / 2, 0, cabinetModel.W);
+  const hits = raycastBidirectional(buildRayBoundariesForBoard("horizontal", probeY, boardIndexLimit, excludeBoardId), seedX);
+  const expanded = clampLocalRect({
+    x: hits.negative.value,
+    y: base.y,
+    width: hits.positive.value - hits.negative.value,
+    height: base.height,
+  });
+  return {
+    localRect: expanded,
+    orientation,
+    traceMeta: { axis: "horizontal", probe: probeY, negative: hits.negative, positive: hits.positive },
+  };
 }
 
 function getBoardBoundaryExpr(board, axis, edge) {
@@ -342,7 +507,9 @@ function getBoardBoundaryExpr(board, axis, edge) {
 
 function refreshFabricationPolicyState(message) {
   if (!fabricationPolicyStateEl) return;
-  const base = `結合ポリシー: 非結合固定 / 原板最大長さ: ${Math.round(fabricationPolicy.maxStockLength)} mm`;
+  const base = `結合ポリシー: 非結合固定 / 原板最大長さ: ${Math.round(fabricationPolicy.maxStockLength)} mm / クリアランスX:${formatMm(
+    fabricationPolicy.defaultClearanceX
+  )} Y:${formatMm(fabricationPolicy.defaultClearanceY)} mm`;
   fabricationPolicyStateEl.textContent = message ? `${base} / ${message}` : base;
 }
 
@@ -496,7 +663,7 @@ function applyWinnerPreferenceForSelected() {
 function hasAnyBoardOverlap() {
   for (let i = 0; i < boards.length; i += 1) {
     for (let j = i + 1; j < boards.length; j += 1) {
-      if (rectsOverlap(boards[i].localRect, boards[j].localRect)) return true;
+      if (rectsOverlap(getBoardCollisionRect(boards[i]), getBoardCollisionRect(boards[j]))) return true;
     }
   }
   return false;
@@ -529,10 +696,14 @@ function restoreBoardsState(snapshot) {
   });
 }
 
-function runWithPropagationGuard(sourceBoardId, mutateFn) {
+function runWithPropagationGuard(_sourceBoardId, mutateFn) {
   const snapshot = snapshotBoardsState();
   mutateFn();
-  propagateLinkedBoardsFrom(sourceBoardId);
+  const ok = recalcAllBoardsFromZero();
+  if (!ok) {
+    restoreBoardsState(snapshot);
+    return false;
+  }
   if (hasAnyBoardOverlap()) {
     restoreBoardsState(snapshot);
     return false;
@@ -569,23 +740,63 @@ function resolveBoardRectFromFormulas(board) {
   return clampLocalRect(fromFormulas);
 }
 
+function getBoardTracePlacementByIndex(board, index) {
+  if (!board || !board.traceMeta) return null;
+  const axis = board.traceMeta.axis;
+  const probe = Number.isFinite(board.traceMeta.probe)
+    ? board.traceMeta.probe
+    : axis === "vertical"
+      ? board.localRect.x + board.localRect.width / 2
+      : board.localRect.y + board.localRect.height / 2;
+  const boundaries = buildRayBoundariesForBoard(axis, probe, index, board.id);
+  const seed = axis === "vertical" ? board.localRect.y + board.localRect.height / 2 : board.localRect.x + board.localRect.width / 2;
+  const hits = raycastBidirectional(boundaries, seed);
+  if (!hits?.negative || !hits?.positive || hits.positive.value <= hits.negative.value) return null;
+  return {
+    axis,
+    probe,
+    negative: hits.negative,
+    positive: hits.positive,
+  };
+}
+
+function rebuildBoardFromIndex(board, index) {
+  if (!board) return;
+  if (board.traceMeta && (board.orientation === "vertical" || board.orientation === "horizontal")) {
+    const nextTrace = getBoardTracePlacementByIndex(board, index);
+    if (nextTrace) board.traceMeta = nextTrace;
+  }
+
+  board.localRect = resolveBoardRectFromFormulas(board);
+  if (board.traceMeta && (board.orientation === "vertical" || board.orientation === "horizontal")) {
+    const lengthFormula = buildTraceLengthFormula(board.traceMeta);
+    if (lengthFormula && board.traceMeta.axis === "horizontal") {
+      board.positionFormulas.x = resolveBoundaryExpr(board.traceMeta.negative, "horizontal");
+      board.positionFormulas.w = lengthFormula;
+      board.finishFormulas.W = lengthFormula;
+      board.localRect = resolveBoardRectFromFormulas(board);
+    }
+    if (lengthFormula && board.traceMeta.axis === "vertical") {
+      board.positionFormulas.y = resolveBoundaryExpr(board.traceMeta.negative, "vertical");
+      board.positionFormulas.h = lengthFormula;
+      board.finishFormulas.H = lengthFormula;
+      board.localRect = resolveBoardRectFromFormulas(board);
+    }
+  }
+  applyPlacementMeta(board);
+}
+
+function recalcAllBoardsFromZero() {
+  for (let i = 0; i < boards.length; i += 1) {
+    rebuildBoardFromIndex(boards[i], i);
+  }
+  boards.forEach((board) => applyLocalRectToNode(board, board.localRect));
+  return !hasAnyBoardOverlap();
+}
+
 function recalcBoardsAfterParentResize() {
   const snapshot = snapshotBoardsState();
-  boards.forEach((board) => {
-    board.localRect = resolveBoardRectFromFormulas(board);
-    applyPlacementMeta(board);
-    applyLocalRectToNode(board, board.localRect);
-  });
-
-  for (let pass = 0; pass < Math.max(1, boards.length); pass += 1) {
-    let changedInPass = false;
-    boards.forEach((board) => {
-      if (!board.traceMeta) return;
-      const changed = recalcTraceLinkedBoard(board);
-      if (changed) changedInPass = true;
-    });
-    if (!changedInPass) break;
-  }
+  recalcAllBoardsFromZero();
 
   if (hasAnyBoardOverlap()) {
     restoreBoardsState(snapshot);
@@ -864,17 +1075,7 @@ function drawCabinetFrame(resetBoards) {
   if (resetBoards) {
     clearBoards();
   } else {
-    boards.forEach((board) => {
-      if (board.traceMeta) {
-        recalcTraceLinkedBoard(board);
-      } else {
-        board.localRect = resolveBoardRectFromFormulas(board);
-      }
-      applyPlacementMeta(board);
-      applyLocalRectToNode(board, board.localRect);
-    });
-    const baseBoards = boards.filter((board) => !board.traceMeta);
-    baseBoards.forEach((board) => propagateLinkedBoardsFrom(board.id));
+    recalcBoardsAfterParentResize();
   }
   guideLines.forEach((guide) => updateGuideLineNode(guide));
   cabinetFrameNode.moveToBottom();
@@ -1644,12 +1845,12 @@ function createBoardFromDraw(localRect, start, end, orientationOverride, traceMe
   if (traceLengthFormula && orientation === "horizontal") {
     finishFormulas.W = traceLengthFormula;
     positionFormulas.w = traceLengthFormula;
-    positionFormulas.x = traceMetaOverride.negative.expr;
+    positionFormulas.x = resolveBoundaryExpr(traceMetaOverride.negative, "horizontal");
   }
   if (traceLengthFormula && orientation === "vertical") {
     finishFormulas.H = traceLengthFormula;
     positionFormulas.h = traceLengthFormula;
-    positionFormulas.y = traceMetaOverride.negative.expr;
+    positionFormulas.y = resolveBoundaryExpr(traceMetaOverride.negative, "vertical");
   }
   const board = {
     id: `part-${boardCounter}`,
@@ -1664,6 +1865,8 @@ function createBoardFromDraw(localRect, start, end, orientationOverride, traceMe
     isMirrored: false,
     matId: template.matId,
     thickness,
+    clearanceX: fabricationPolicy.defaultClearanceX,
+    clearanceY: fabricationPolicy.defaultClearanceY,
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
     marginFormulas: { W: `${DEFAULT_MARGIN_MM}`, H: `${DEFAULT_MARGIN_MM}`, D: `${DEFAULT_MARGIN_MM}` },
     localRect,
@@ -1809,7 +2012,7 @@ function continueDraw() {
   const local = stageToLocalPoint(pointer);
   const clamped = { x: clamp(local.x, 0, cabinetModel.W), y: clamp(local.y, 0, cabinetModel.H) };
   const snapped = snapLocalPoint(clamped);
-  const expanded = expandTracePlacement(startSnap, snapped, templateSelectEl.value);
+  const expanded = buildTracePlacementForBoard(startSnap, snapped, templateSelectEl.value, null, boards.length, null);
   currentLocalRect = expanded.localRect;
   currentTraceMeta = expanded.traceMeta;
   const stageRect = localRectToStageRect(currentLocalRect);
@@ -1855,7 +2058,7 @@ function endDraw() {
   });
   const finalOrientation = currentTraceMeta?.axis === "vertical" ? "vertical" : currentTraceMeta?.axis === "horizontal" ? "horizontal" : null;
   const board = createBoardFromDraw(currentLocalRect, startSnap, endSnap, finalOrientation, currentTraceMeta);
-  if (overlapsAnyOtherBoard(board.localRect, board.id)) {
+  if (overlapsAnyOtherBoard(board.localRect, board.id, getBoardPadding(board))) {
     if (draftRect) {
       draftRect.size({ width: 0, height: 0 });
       draftText.text("");
@@ -1868,6 +2071,21 @@ function endDraw() {
   boards.push(board);
   layer.add(board.node);
   selectBoard(board.node);
+  const accepted = recalcAllBoardsFromZero();
+  if (!accepted) {
+    board.node.destroy();
+    boards.pop();
+    recalcAllBoardsFromZero();
+    if (draftRect) {
+      draftRect.size({ width: 0, height: 0 });
+      draftText.text("");
+    }
+    if (draftRayLine) draftRayLine.points([]);
+    currentTraceMeta = null;
+    updatePartsList();
+    layer.batchDraw();
+    return;
+  }
   updatePartsList();
 
   draftRect.size({ width: 0, height: 0 });
@@ -2000,6 +2218,32 @@ function initStage() {
       if (Number.isFinite(parsed) && parsed > 0) {
         fabricationPolicy.maxStockLength = parsed;
       }
+      refreshFabricationPolicyState();
+    });
+  }
+  if (clearanceXEl) {
+    clearanceXEl.addEventListener("change", () => {
+      const parsed = Number(clearanceXEl.value);
+      fabricationPolicy.defaultClearanceX = Number.isFinite(parsed) && parsed >= 0 ? parsed : fabricationPolicy.defaultClearanceX;
+      boards.forEach((board) => {
+        board.clearanceX = fabricationPolicy.defaultClearanceX;
+      });
+      recalcAllBoardsFromZero();
+      updatePartsList();
+      layer.batchDraw();
+      refreshFabricationPolicyState();
+    });
+  }
+  if (clearanceYEl) {
+    clearanceYEl.addEventListener("change", () => {
+      const parsed = Number(clearanceYEl.value);
+      fabricationPolicy.defaultClearanceY = Number.isFinite(parsed) && parsed >= 0 ? parsed : fabricationPolicy.defaultClearanceY;
+      boards.forEach((board) => {
+        board.clearanceY = fabricationPolicy.defaultClearanceY;
+      });
+      recalcAllBoardsFromZero();
+      updatePartsList();
+      layer.batchDraw();
       refreshFabricationPolicyState();
     });
   }
