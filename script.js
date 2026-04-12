@@ -685,38 +685,28 @@ function applyWinnerAgainstBoard(winner, loser) {
   const boundary = getContactBoundaryFromWinner(winner, loser, axis);
   if (!boundary) return false;
 
+  const next = { ...loser.localRect };
   if (axis === "vertical") {
-    const fixedTop = buildFixedBoundaryRef(loser.localRect.y);
-    const fixedBottom = buildFixedBoundaryRef(loser.localRect.y + loser.localRect.height);
-    loser.traceMeta = {
-      axis,
-      probe: clamp(loser.localRect.x + loser.localRect.width / 2, 0, cabinetModel.W),
-      negative: boundary.edge === "min" ? boundary : fixedTop,
-      positive: boundary.edge === "max" ? boundary : fixedBottom,
-    };
-    const lengthExpr = buildTraceLengthFormula(loser.traceMeta);
-    if (!lengthExpr) return false;
-    loser.positionFormulas.y = resolveBoundaryExpr(loser.traceMeta.negative, axis);
-    loser.positionFormulas.h = lengthExpr;
-    loser.finishFormulas.H = lengthExpr;
+    if (boundary.edge === "max") {
+      next.height = Math.max(MIN_DRAW_SIZE_MM, boundary.value - next.y);
+    } else {
+      const bottom = next.y + next.height;
+      next.y = boundary.value;
+      next.height = Math.max(MIN_DRAW_SIZE_MM, bottom - boundary.value);
+    }
   } else {
-    const fixedLeft = buildFixedBoundaryRef(loser.localRect.x);
-    const fixedRight = buildFixedBoundaryRef(loser.localRect.x + loser.localRect.width);
-    loser.traceMeta = {
-      axis,
-      probe: clamp(loser.localRect.y + loser.localRect.height / 2, 0, cabinetModel.H),
-      negative: boundary.edge === "min" ? boundary : fixedLeft,
-      positive: boundary.edge === "max" ? boundary : fixedRight,
-    };
-    const lengthExpr = buildTraceLengthFormula(loser.traceMeta);
-    if (!lengthExpr) return false;
-    loser.positionFormulas.x = resolveBoundaryExpr(loser.traceMeta.negative, axis);
-    loser.positionFormulas.w = lengthExpr;
-    loser.finishFormulas.W = lengthExpr;
+    if (boundary.edge === "max") {
+      next.width = Math.max(MIN_DRAW_SIZE_MM, boundary.value - next.x);
+    } else {
+      const right = next.x + next.width;
+      next.x = boundary.value;
+      next.width = Math.max(MIN_DRAW_SIZE_MM, right - boundary.value);
+    }
   }
-
-  loser.localRect = resolveBoardRectFromFormulas(loser);
+  loser.localRect = clampBoardRectByOrientation(loser, next);
   applyPlacementMeta(loser);
+  syncBoardFormulasFromRect(loser);
+  loser.hitTargetIds = [...new Set([...(normalizeHitTargetIds(loser) || []), winner.id])];
   applyLocalRectToNode(loser, loser.localRect);
   return true;
 }
@@ -790,7 +780,6 @@ function setLoserGrowthOriginFromZeroToCollision(winner, loser) {
   loser.localRect = clampBoardRectByOrientation(loser, resetRect);
   syncBoardFormulasFromRect(loser);
   loser.hitTargetIds = [...new Set([...(normalizeHitTargetIds(loser) || []), winner.id])];
-  loser.traceMeta = null;
   return true;
 }
 
@@ -1279,26 +1268,6 @@ function resolveBoardRectFromFormulas(board) {
   return clampBoardRectByOrientation(board, fromFormulas);
 }
 
-function getBoardTracePlacementByIndex(board, index) {
-  if (!board || !board.traceMeta) return null;
-  const axis = board.traceMeta.axis;
-  const probe = Number.isFinite(board.traceMeta.probe)
-    ? board.traceMeta.probe
-    : axis === "vertical"
-      ? board.localRect.x + board.localRect.width / 2
-      : board.localRect.y + board.localRect.height / 2;
-  const boundaries = buildRayBoundariesForBoard(axis, probe, index, board.id);
-  const seed = axis === "vertical" ? board.localRect.y + board.localRect.height / 2 : board.localRect.x + board.localRect.width / 2;
-  const hits = raycastBidirectional(boundaries, seed);
-  if (!hits?.negative || !hits?.positive || hits.positive.value <= hits.negative.value) return null;
-  return {
-    axis,
-    probe,
-    negative: hits.negative,
-    positive: hits.positive,
-  };
-}
-
 function buildPhysicalGrowthRect(board, index) {
   const origin = {
     x: board.localRect.x + board.localRect.width / 2,
@@ -1349,7 +1318,7 @@ function buildPhysicalGrowthRect(board, index) {
     };
   }
 
-  return { rect: resolveBoardRectFromFormulas(board), traceMeta: board.traceMeta || null };
+  return { rect: resolveBoardRectFromFormulas(board), traceMeta: null };
 }
 
 function rebuildBoardFromIndex(board, index) {
@@ -1359,18 +1328,16 @@ function rebuildBoardFromIndex(board, index) {
     const grown = buildPhysicalGrowthRect(board, index);
     if (grown) {
       board.localRect = grown.rect;
-      board.traceMeta = grown.traceMeta;
       board.hitTargetIds = extractHitTargetIdsFromTrace(grown.traceMeta, board.id, idSet);
-      const lengthFormula = buildTraceLengthFormula(board.traceMeta);
-      if (lengthFormula && board.traceMeta.axis === "horizontal") {
-        board.positionFormulas.x = resolveBoundaryExpr(board.traceMeta.negative, "horizontal");
-        board.positionFormulas.w = lengthFormula;
-        board.finishFormulas.W = lengthFormula;
+      if (grown.traceMeta?.axis === "horizontal") {
+        board.positionFormulas.x = formatMm(grown.rect.x);
+        board.positionFormulas.w = formatMm(grown.rect.width);
+        board.finishFormulas.W = formatMm(grown.rect.width);
       }
-      if (lengthFormula && board.traceMeta.axis === "vertical") {
-        board.positionFormulas.y = resolveBoundaryExpr(board.traceMeta.negative, "vertical");
-        board.positionFormulas.h = lengthFormula;
-        board.finishFormulas.H = lengthFormula;
+      if (grown.traceMeta?.axis === "vertical") {
+        board.positionFormulas.y = formatMm(grown.rect.y);
+        board.positionFormulas.h = formatMm(grown.rect.height);
+        board.finishFormulas.H = formatMm(grown.rect.height);
       }
     } else {
       board.localRect = resolveBoardRectFromFormulas(board);
@@ -2230,13 +2197,6 @@ function raycastBidirectional(boundaries, seedValue) {
   return { negative: first, positive: last };
 }
 
-function buildTraceLengthFormula(traceMeta) {
-  if (!traceMeta) return null;
-  const negativeExpr = resolveBoundaryExpr(traceMeta.negative, traceMeta.axis);
-  const positiveExpr = resolveBoundaryExpr(traceMeta.positive, traceMeta.axis);
-  return `(${positiveExpr}) - (${negativeExpr})`;
-}
-
 function expandTracePlacement(start, current, templateId, orientationOverride) {
   const orientation = resolveTemplateOrientation(templateId, start, current, null, orientationOverride);
   const raw = normalizeRect(start, current);
@@ -2276,133 +2236,6 @@ function expandTracePlacement(start, current, templateId, orientationOverride) {
     orientation,
     traceMeta: { axis: "horizontal", probe: probeY, negative: hits.negative, positive: hits.positive },
   };
-}
-
-function resolveBoundaryValue(boundaryRef, axis) {
-  if (!boundaryRef) return null;
-  if (boundaryRef.sourceType === "fixed") {
-    if (Number.isFinite(boundaryRef.value)) return boundaryRef.value;
-    const fallback = Number(boundaryRef.expr);
-    return Number.isFinite(fallback) ? fallback : null;
-  }
-  if (boundaryRef.sourceType === "parent") {
-    if (axis === "vertical") return boundaryRef.edge === "min" ? 0 : cabinetModel.H;
-    return boundaryRef.edge === "min" ? 0 : cabinetModel.W;
-  }
-  if (boundaryRef.sourceType === "guide") {
-    const guide = guideLines.find((item) => item.id === boundaryRef.sourceId);
-    return guide ? guide.value : null;
-  }
-  if (boundaryRef.sourceType === "part") {
-    const board = boards.find((item) => item.id === boundaryRef.sourceId);
-    if (!board) return null;
-    if (axis === "vertical") return boundaryRef.edge === "min" ? board.localRect.y : board.localRect.y + board.localRect.height;
-    return boundaryRef.edge === "min" ? board.localRect.x : board.localRect.x + board.localRect.width;
-  }
-  return null;
-}
-
-function resolveBoundaryExpr(boundaryRef, axis) {
-  if (!boundaryRef) return "0";
-  if (boundaryRef.sourceType === "fixed") {
-    if (boundaryRef.expr !== undefined && boundaryRef.expr !== null) return `${boundaryRef.expr}`;
-    if (Number.isFinite(boundaryRef.value)) return formatMm(boundaryRef.value);
-    return "0";
-  }
-  if (boundaryRef.sourceType === "parent") {
-    if (axis === "vertical") return boundaryRef.edge === "min" ? "0" : "$H";
-    return boundaryRef.edge === "min" ? "0" : "$W";
-  }
-  if (boundaryRef.sourceType === "guide") {
-    const guide = guideLines.find((item) => item.id === boundaryRef.sourceId);
-    return guide ? guide.expr : boundaryRef.expr || "0";
-  }
-  if (boundaryRef.sourceType === "part") {
-    const board = boards.find((item) => item.id === boundaryRef.sourceId);
-    if (!board) return boundaryRef.expr || "0";
-    if (axis === "vertical") {
-      return boundaryRef.edge === "min" ? board.positionFormulas.y : `(${board.positionFormulas.y}) + (${board.positionFormulas.h})`;
-    }
-    return boundaryRef.edge === "min" ? board.positionFormulas.x : `(${board.positionFormulas.x}) + (${board.positionFormulas.w})`;
-  }
-  return boundaryRef.expr || "0";
-}
-
-function describeBoundarySource(boundaryRef) {
-  if (!boundaryRef) return "-";
-  if (boundaryRef.sourceType === "fixed") {
-    return `固定(${boundaryRef.expr ?? formatMm(boundaryRef.value ?? 0)})`;
-  }
-  if (boundaryRef.sourceType === "parent") {
-    return boundaryRef.edge === "min" ? "親枠(min)" : "親枠(max)";
-  }
-  if (boundaryRef.sourceType === "guide") {
-    return `補助線(${boundaryRef.sourceId})`;
-  }
-  if (boundaryRef.sourceType === "part") {
-    return `部材(${boundaryRef.sourceId})`;
-  }
-  return "-";
-}
-
-function traceDependsOnBoard(traceMeta, boardId) {
-  if (!traceMeta) return false;
-  return (
-    (traceMeta.negative?.sourceType === "part" && traceMeta.negative.sourceId === boardId) ||
-    (traceMeta.positive?.sourceType === "part" && traceMeta.positive.sourceId === boardId)
-  );
-}
-
-function recalcTraceLinkedBoard(board) {
-  if (!board.traceMeta) return false;
-  const before = JSON.stringify(board.localRect);
-  const axis = board.traceMeta.axis;
-  const negative = resolveBoundaryValue(board.traceMeta.negative, axis);
-  const positive = resolveBoundaryValue(board.traceMeta.positive, axis);
-  if (negative === null || positive === null || positive <= negative) return false;
-
-  if (axis === "horizontal") {
-    board.localRect.x = negative;
-    board.localRect.width = positive - negative;
-  } else {
-    board.localRect.y = negative;
-    board.localRect.height = positive - negative;
-  }
-  board.localRect = clampLocalRect(board.localRect);
-  board.finishFormulas = buildFinishFormulas(board.templateId, board.localRect, board.thickness, board.orientation);
-  board.positionFormulas = buildPositionFormulas(board.localRect, null, null, board.templateId, board.orientation);
-
-  const lengthFormula = buildTraceLengthFormula(board.traceMeta);
-  if (lengthFormula && axis === "horizontal") {
-    board.finishFormulas.W = lengthFormula;
-    board.positionFormulas.w = lengthFormula;
-    board.positionFormulas.x = resolveBoundaryExpr(board.traceMeta.negative, axis);
-  }
-  if (lengthFormula && axis === "vertical") {
-    board.finishFormulas.H = lengthFormula;
-    board.positionFormulas.h = lengthFormula;
-    board.positionFormulas.y = resolveBoundaryExpr(board.traceMeta.negative, axis);
-  }
-  applyPlacementMeta(board);
-  applyLocalRectToNode(board, board.localRect);
-  return before !== JSON.stringify(board.localRect);
-}
-
-function propagateLinkedBoardsFrom(changedBoardId) {
-  const queue = [changedBoardId];
-  const expanded = new Set();
-  while (queue.length > 0) {
-    const sourceId = queue.shift();
-    boards.forEach((board) => {
-      if (board.id === sourceId) return;
-      if (!traceDependsOnBoard(board.traceMeta, sourceId)) return;
-      const changed = recalcTraceLinkedBoard(board);
-      if (changed && !expanded.has(board.id)) {
-        expanded.add(board.id);
-        queue.push(board.id);
-      }
-    });
-  }
 }
 
 function buildTracePreviewPoints(traceMeta) {
@@ -2682,19 +2515,8 @@ function createBoardFromDraw(localRect, start, end, orientationOverride, traceMe
   const template = getTemplate(templateId);
   const thickness = getTemplateThickness(templateId);
   const orientation = resolveTemplateOrientation(templateId, start, end, localRect, orientationOverride);
-  const traceLengthFormula = buildTraceLengthFormula(traceMetaOverride);
   const finishFormulas = buildFinishFormulas(templateId, localRect, thickness, orientation);
   const positionFormulas = buildPositionFormulas(localRect, start, end, templateId, orientation);
-  if (traceLengthFormula && orientation === "horizontal") {
-    finishFormulas.W = traceLengthFormula;
-    positionFormulas.w = traceLengthFormula;
-    positionFormulas.x = resolveBoundaryExpr(traceMetaOverride.negative, "horizontal");
-  }
-  if (traceLengthFormula && orientation === "vertical") {
-    finishFormulas.H = traceLengthFormula;
-    positionFormulas.h = traceLengthFormula;
-    positionFormulas.y = resolveBoundaryExpr(traceMetaOverride.negative, "vertical");
-  }
   const board = {
     id: `part-${boardCounter}`,
     kind: "part",
@@ -2713,7 +2535,7 @@ function createBoardFromDraw(localRect, start, end, orientationOverride, traceMe
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
     marginFormulas: { W: `${DEFAULT_MARGIN_MM}`, H: `${DEFAULT_MARGIN_MM}`, D: `${DEFAULT_MARGIN_MM}` },
     localRect,
-    traceMeta: traceMetaOverride || null,
+    traceMeta: null,
     hitTargetIds: extractHitTargetIdsFromTrace(traceMetaOverride, `part-${boardCounter}`),
     finishFormulas,
     positionFormulas,
@@ -2775,9 +2597,6 @@ function updatePartsList() {
   partsListEl.innerHTML = boards
     .map((board) => {
       const dims = resolvePartDimensions(board);
-      const boundaryInfo = board.traceMeta
-        ? `${describeBoundarySource(board.traceMeta.negative)} -> ${describeBoundarySource(board.traceMeta.positive)}`
-        : "-";
       return `
         <article class="part-card">
           <h3 class="part-title">${board.name} / ${board.drawingNo}</h3>
@@ -2791,7 +2610,6 @@ function updatePartsList() {
           <div class="row"><span>発注寸法（長さx奥行）</span><strong>${dimsLabel(getActualOrderSize(board, dims).length, getActualOrderSize(board, dims).depth)}</strong></div>
           <div class="row"><span>発注寸法</span><strong>${dimsLabel(dims.order.W ?? 0, dims.order.H ?? 0)}</strong></div>
           <div class="row"><span>座標式</span><strong>x:${board.positionFormulas.x} / y:${board.positionFormulas.y}</strong></div>
-          <div class="row"><span>境界由来</span><strong>${boundaryInfo}</strong></div>
           <div class="row"><span>依存(hitTargetIds)</span><strong>${(board.hitTargetIds || []).join(", ") || "-"}</strong></div>
         </article>
       `;
