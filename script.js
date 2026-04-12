@@ -988,6 +988,7 @@ function snapshotBoardsState() {
       localRect: { ...board.localRect },
       finishFormulas: { ...board.finishFormulas },
       positionFormulas: { ...board.positionFormulas },
+      growthOrigin: board.growthOrigin ? { ...board.growthOrigin } : null,
       placementSide: board.placementSide,
       isMirrored: board.isMirrored,
     };
@@ -1007,6 +1008,7 @@ function restoreBoardsState(snapshot) {
     board.localRect = { ...saved.localRect };
     board.finishFormulas = { ...saved.finishFormulas };
     board.positionFormulas = { ...saved.positionFormulas };
+    board.growthOrigin = saved.growthOrigin ? { ...saved.growthOrigin } : board.growthOrigin;
     board.placementSide = saved.placementSide;
     board.isMirrored = saved.isMirrored;
     applyLocalRectToNode(board, board.localRect);
@@ -1077,28 +1079,82 @@ function getBoardTracePlacementByIndex(board, index) {
   };
 }
 
-function rebuildBoardFromIndex(board, index) {
-  if (!board) return;
-  if (board.traceMeta && (board.orientation === "vertical" || board.orientation === "horizontal")) {
-    const nextTrace = getBoardTracePlacementByIndex(board, index);
-    if (nextTrace) board.traceMeta = nextTrace;
+function buildPhysicalGrowthRect(board, index) {
+  const origin = board.growthOrigin || {
+    x: board.localRect.x + board.localRect.width / 2,
+    y: board.localRect.y + board.localRect.height / 2,
+  };
+  const boundedOrigin = {
+    x: clamp(origin.x, 0, cabinetModel.W),
+    y: clamp(origin.y, 0, cabinetModel.H),
+  };
+
+  if (board.orientation === "vertical") {
+    const boundaries = buildRayBoundariesForBoard("vertical", boundedOrigin.x, index, board.id);
+    const hits = raycastBidirectional(boundaries, boundedOrigin.y);
+    if (!hits?.negative || !hits?.positive || hits.positive.value <= hits.negative.value) return null;
+    return {
+      rect: clampLocalRect({
+        x: boundedOrigin.x - board.thickness / 2,
+        y: hits.negative.value,
+        width: board.thickness,
+        height: hits.positive.value - hits.negative.value,
+      }),
+      traceMeta: {
+        axis: "vertical",
+        probe: boundedOrigin.x,
+        negative: hits.negative,
+        positive: hits.positive,
+      },
+    };
   }
 
-  board.localRect = resolveBoardRectFromFormulas(board);
-  if (board.traceMeta && (board.orientation === "vertical" || board.orientation === "horizontal")) {
-    const lengthFormula = buildTraceLengthFormula(board.traceMeta);
-    if (lengthFormula && board.traceMeta.axis === "horizontal") {
-      board.positionFormulas.x = resolveBoundaryExpr(board.traceMeta.negative, "horizontal");
-      board.positionFormulas.w = lengthFormula;
-      board.finishFormulas.W = lengthFormula;
+  if (board.orientation === "horizontal") {
+    const boundaries = buildRayBoundariesForBoard("horizontal", boundedOrigin.y, index, board.id);
+    const hits = raycastBidirectional(boundaries, boundedOrigin.x);
+    if (!hits?.negative || !hits?.positive || hits.positive.value <= hits.negative.value) return null;
+    return {
+      rect: clampLocalRect({
+        x: hits.negative.value,
+        y: boundedOrigin.y - board.thickness / 2,
+        width: hits.positive.value - hits.negative.value,
+        height: board.thickness,
+      }),
+      traceMeta: {
+        axis: "horizontal",
+        probe: boundedOrigin.y,
+        negative: hits.negative,
+        positive: hits.positive,
+      },
+    };
+  }
+
+  return { rect: resolveBoardRectFromFormulas(board), traceMeta: board.traceMeta || null };
+}
+
+function rebuildBoardFromIndex(board, index) {
+  if (!board) return;
+  if (board.orientation === "vertical" || board.orientation === "horizontal") {
+    const grown = buildPhysicalGrowthRect(board, index);
+    if (grown) {
+      board.localRect = grown.rect;
+      board.traceMeta = grown.traceMeta;
+      const lengthFormula = buildTraceLengthFormula(board.traceMeta);
+      if (lengthFormula && board.traceMeta.axis === "horizontal") {
+        board.positionFormulas.x = resolveBoundaryExpr(board.traceMeta.negative, "horizontal");
+        board.positionFormulas.w = lengthFormula;
+        board.finishFormulas.W = lengthFormula;
+      }
+      if (lengthFormula && board.traceMeta.axis === "vertical") {
+        board.positionFormulas.y = resolveBoundaryExpr(board.traceMeta.negative, "vertical");
+        board.positionFormulas.h = lengthFormula;
+        board.finishFormulas.H = lengthFormula;
+      }
+    } else {
       board.localRect = resolveBoardRectFromFormulas(board);
     }
-    if (lengthFormula && board.traceMeta.axis === "vertical") {
-      board.positionFormulas.y = resolveBoundaryExpr(board.traceMeta.negative, "vertical");
-      board.positionFormulas.h = lengthFormula;
-      board.finishFormulas.H = lengthFormula;
-      board.localRect = resolveBoardRectFromFormulas(board);
-    }
+  } else {
+    board.localRect = resolveBoardRectFromFormulas(board);
   }
   applyPlacementMeta(board);
 }
@@ -1108,6 +1164,7 @@ function recalcAllBoardsFromZero() {
     rebuildBoardFromIndex(boards[i], i);
   }
   boards.forEach((board) => applyLocalRectToNode(board, board.localRect));
+  refreshJunctionMarkers();
   return !hasAnyBoardOverlap();
 }
 
@@ -2027,6 +2084,10 @@ function createBoardNode(board) {
         board.positionFormulas.x = snapped.snappedX ? toRelativeFormula(nextRect.x, snapped.refXValue, snapped.refXExpr) : formatMm(nextRect.x);
         board.positionFormulas.y = snapped.snappedY ? toRelativeFormula(nextRect.y, snapped.refYValue, snapped.refYExpr) : formatMm(nextRect.y);
       }
+      board.growthOrigin = {
+        x: nextRect.x + nextRect.width / 2,
+        y: nextRect.y + nextRect.height / 2,
+      };
       applyLocalRectToNode(board, nextRect);
     });
     if (!accepted) {
@@ -2058,6 +2119,10 @@ function createBoardNode(board) {
       applyPlacementMeta(board);
       board.finishFormulas = buildFinishFormulas(board.templateId, nextRect, board.thickness, board.orientation);
       board.positionFormulas = buildPositionFormulas(nextRect, null, null, board.templateId, board.orientation);
+      board.growthOrigin = {
+        x: nextRect.x + nextRect.width / 2,
+        y: nextRect.y + nextRect.height / 2,
+      };
       applyLocalRectToNode(board, nextRect);
     });
     if (!accepted) {
@@ -2185,6 +2250,7 @@ function createBoardFromDraw(localRect, start, end, orientationOverride, traceMe
     thickness,
     clearanceX: fabricationPolicy.defaultClearanceX,
     clearanceY: fabricationPolicy.defaultClearanceY,
+    growthOrigin: { x: localRect.x + localRect.width / 2, y: localRect.y + localRect.height / 2 },
     drawingNo: `${DRAWING_NO_PREFIX}${String(boardCounter).padStart(4, "0")}`,
     marginFormulas: { W: `${DEFAULT_MARGIN_MM}`, H: `${DEFAULT_MARGIN_MM}`, D: `${DEFAULT_MARGIN_MM}` },
     localRect,
@@ -2436,6 +2502,10 @@ function applyRelativeDelta(deltaMm) {
       const thickened = applyTemplateThickness(next, next, next, board.templateId, board.orientation);
       board.localRect = thickened;
       applyPlacementMeta(board);
+      board.growthOrigin = {
+        x: thickened.x + thickened.width / 2,
+        y: thickened.y + thickened.height / 2,
+      };
       board.finishFormulas = buildFinishFormulas(board.templateId, thickened, board.thickness, board.orientation);
       board.positionFormulas = buildPositionFormulas(thickened, null, null, board.templateId, board.orientation);
     } else {
@@ -2449,6 +2519,10 @@ function applyRelativeDelta(deltaMm) {
       }
       board.localRect = clampLocalRect(next);
       applyPlacementMeta(board);
+      board.growthOrigin = {
+        x: board.localRect.x + board.localRect.width / 2,
+        y: board.localRect.y + board.localRect.height / 2,
+      };
       if (board.orientation === "vertical") {
         board.positionFormulas.x = formatMm(board.localRect.x);
       } else if (board.orientation === "horizontal") {
