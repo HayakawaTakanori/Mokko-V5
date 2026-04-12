@@ -1584,7 +1584,7 @@ function clearBoards() {
   refreshHud();
 }
 
-function drawCabinetFrame(resetBoards) {
+function drawCabinetFrame(resetBoards = false) {
   cabinetModel.W = parseInputValue(cabinetWidthEl, cabinetModel.W);
   cabinetModel.H = parseInputValue(cabinetHeightEl, cabinetModel.H);
   cabinetModel.D = parseInputValue(cabinetDepthEl, cabinetModel.D);
@@ -1623,10 +1623,18 @@ function drawCabinetFrame(resetBoards) {
   cabinetLabelNode.position({ x: cabinetModel.x + 4, y: cabinetModel.y - 20 });
   cabinetLabelNode.text(`Cabinet W:${Math.round(cabinetModel.W)} H:${Math.round(cabinetModel.H)} D:${Math.round(cabinetModel.D)} mm`);
 
+  let resizeAccepted = true;
   if (resetBoards) {
     clearBoards();
   } else {
-    recalcBoardsAfterParentResize();
+    resizeAccepted = recalcBoardsAfterParentResize();
+    updatePartsList();
+    refreshHud();
+    if (!resizeAccepted) {
+      refreshFabricationPolicyState("外寸変更をロールバック: 非重なり条件を満たせませんでした。");
+    } else {
+      refreshFabricationPolicyState("外寸変更を適用: 既存部材を再計算しました。");
+    }
   }
   guideLines.forEach((guide) => updateGuideLineNode(guide));
   refreshJunctionMarkers();
