@@ -132,6 +132,20 @@ table.grid tr.selected{background:#d4e8ff!important}
       <button id="btn-dropbox-disconnect" disabled>切断</button>
     </div>
     <p id="dropbox-status" style="font-size:13px;color:#666">未接続</p>
+    <h3>営業日カレンダー</h3>
+    <p style="font-size:13px;color:#666">祝日一覧を外部JSONから取り込みます。カード引落日が土日祝の場合は翌営業日に繰り越されます。</p>
+    <p id="calendar-status" style="font-size:13px;color:#666">祝日: 未登録（土日のみ判定）</p>
+    <div class="form-row">
+      <label>祝日JSONのURL（任意）</label>
+      <input type="url" id="calendar-url" placeholder="https://example.com/holidays.json">
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
+      <button id="btn-calendar-import">祝日JSONインポート</button>
+      <button id="btn-calendar-url">URLから取得</button>
+      <button id="btn-calendar-export">祝日JSONエクスポート</button>
+      <button id="btn-calendar-clear">祝日をクリア</button>
+      <input type="file" id="calendar-file" accept=".json" class="hidden">
+    </div>
     <h3>データ管理</h3>
     <div style="display:flex;gap:8px">
       <button id="btn-export">JSONエクスポート</button>
@@ -207,7 +221,8 @@ function defaultData() {
     cards: [],
     loans: [],
     fixedCosts: [],
-    entries: []
+    entries: [],
+    calendar: { holidays: [], source: null, lastImported: null }
   };
 }
 
@@ -223,6 +238,9 @@ const Store = {
   load() {
     const raw = localStorage.getItem(STORAGE_KEY);
     this.data = raw ? JSON.parse(raw) : defaultData();
+    if (!this.data.calendar) {
+      this.data.calendar = { holidays: [], source: null, lastImported: null };
+    }
     const now = new Date();
     this.viewStart = formatDate(now.getFullYear(), now.getMonth(), 1);
     const end = addMonths(now.getFullYear(), now.getMonth(), 3);
@@ -271,6 +289,95 @@ const Store = {
 };
 
 // ============================================================
+// 営業日カレンダー（外部JSON取込）
+// ============================================================
+const BusinessCalendar = {
+  holidaySet() {
+    return new Set(Store.data.calendar?.holidays || []);
+  },
+
+  isWeekend(dateStr) {
+    const dow = parseDate(dateStr).getDay();
+    return dow === 0 || dow === 6;
+  },
+
+  isHoliday(dateStr) {
+    return this.holidaySet().has(dateStr);
+  },
+
+  isNonBusinessDay(dateStr) {
+    return this.isWeekend(dateStr) || this.isHoliday(dateStr);
+  },
+
+  toNextBusinessDay(dateStr) {
+    let d = parseDate(dateStr);
+    let s = dateStr;
+    for (let i = 0; i < 366 && this.isNonBusinessDay(s); i++) {
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+      s = formatDate(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+    return s;
+  },
+
+  normalizeHolidayList(input) {
+    let list = input;
+    if (input && typeof input === 'object' && !Array.isArray(input)) {
+      list = input.holidays || input.dates || [];
+    }
+    if (!Array.isArray(list)) throw new Error('祝日リストの形式が不正です');
+    const holidays = list.map(item => {
+      if (typeof item === 'string') return item;
+      if (item && item.date) return item.date;
+      throw new Error('祝日エントリの形式が不正です');
+    }).filter(Boolean);
+    const bad = holidays.find(h => !/^\d{4}-\d{2}-\d{2}$/.test(h));
+    if (bad) throw new Error(`日付形式が不正です: ${bad}`);
+    return [...new Set(holidays)].sort();
+  },
+
+  importHolidays(raw, source) {
+    const holidays = this.normalizeHolidayList(typeof raw === 'string' ? JSON.parse(raw) : raw);
+    Store.data.calendar = {
+      holidays,
+      source: source || 'import',
+      lastImported: new Date().toISOString()
+    };
+    Store.save();
+    UI.updateCalendarStatus();
+    UI.renderLedger();
+    return holidays.length;
+  },
+
+  async fetchFromUrl(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    return this.importHolidays(text, url);
+  },
+
+  exportJson() {
+    return JSON.stringify({
+      name: '営業日カレンダー',
+      holidays: Store.data.calendar?.holidays || []
+    }, null, 2);
+  },
+
+  updateStatus() {
+    const el = document.getElementById('calendar-status');
+    if (!el) return;
+    const cal = Store.data.calendar;
+    const n = cal?.holidays?.length || 0;
+    if (n === 0) {
+      el.textContent = '祝日: 未登録（土日のみ判定）';
+      return;
+    }
+    const sorted = [...cal.holidays].sort();
+    const src = cal.source ? ` / 出典: ${cal.source}` : '';
+    el.textContent = `祝日: ${n}件（${sorted[0]} 〜 ${sorted[sorted.length - 1]}）${src}`;
+  }
+};
+
+// ============================================================
 // カード引落ロジック
 // ============================================================
 const CardLogic = {
@@ -288,7 +395,8 @@ const CardLogic = {
     const closing = this.getClosingDate(expenseDate, card.closingDay);
     const cd = parseDate(closing);
     const pm = addMonths(cd.getFullYear(), cd.getMonth(), card.paymentMonthOffset);
-    return formatDate(pm[0], pm[1], clampDay(pm[0], pm[1], card.paymentDay));
+    const rawDate = formatDate(pm[0], pm[1], clampDay(pm[0], pm[1], card.paymentDay));
+    return BusinessCalendar.toNextBusinessDay(rawDate);
   },
 
   getPeriodLabel(expenseDate, card) {
@@ -688,14 +796,63 @@ const UI = {
       reader.onload = (ev) => {
         try {
           Store.data = JSON.parse(ev.target.result);
+          if (!Store.data.calendar) {
+            Store.data.calendar = { holidays: [], source: null, lastImported: null };
+          }
           Store.save();
           this.renderAll();
+          this.updateCalendarStatus();
           alert('インポートしました');
         } catch { alert('JSONの読み込みに失敗しました'); }
       };
       reader.readAsText(file);
     };
+    document.getElementById('btn-calendar-import').onclick = () =>
+      document.getElementById('calendar-file').click();
+    document.getElementById('calendar-file').onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const count = BusinessCalendar.importHolidays(ev.target.result, file.name);
+          alert(`祝日を${count}件取り込みました`);
+        } catch (err) { alert('祝日JSONの読み込みに失敗しました: ' + err.message); }
+        e.target.value = '';
+      };
+      reader.readAsText(file);
+    };
+    document.getElementById('btn-calendar-url').onclick = async () => {
+      const url = document.getElementById('calendar-url').value.trim();
+      if (!url) { alert('URLを入力してください'); return; }
+      try {
+        const count = await BusinessCalendar.fetchFromUrl(url);
+        localStorage.setItem('higuri-calendar-url', url);
+        alert(`祝日を${count}件取得しました`);
+      } catch (err) { alert('URLからの取得に失敗しました: ' + err.message); }
+    };
+    document.getElementById('btn-calendar-export').onclick = () => {
+      const blob = new Blob([BusinessCalendar.exportJson()], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'holidays.json';
+      a.click();
+    };
+    document.getElementById('btn-calendar-clear').onclick = () => {
+      if (!confirm('登録済みの祝日をすべて削除しますか？')) return;
+      Store.data.calendar = { holidays: [], source: null, lastImported: null };
+      Store.save();
+      this.updateCalendarStatus();
+      this.renderLedger();
+    };
+    const savedCalUrl = localStorage.getItem('higuri-calendar-url');
+    if (savedCalUrl) document.getElementById('calendar-url').value = savedCalUrl;
+    this.updateCalendarStatus();
     Dropbox.updateStatus();
+  },
+
+  updateCalendarStatus() {
+    BusinessCalendar.updateStatus();
   },
 
   updateSyncBadge(state, msg) {
