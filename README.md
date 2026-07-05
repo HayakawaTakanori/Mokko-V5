@@ -6,7 +6,7 @@
 
 ### 使い方
 
-1. `higuri.html` をブラウザで開く（Mac / iPad 両対応）
+1. `higuri.html` または `index.html` をブラウザで開く（Mac / iPad 両対応）
 2. iPadでは「ホーム画面に追加」でアプリのように利用可能
 3. データはブラウザの localStorage に自動保存されます
 4. Dropbox同期を使う場合は「設定」タブで App Key を入力して接続

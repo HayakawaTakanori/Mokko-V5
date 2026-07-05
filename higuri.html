@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#f5f5f5">
 <title>日繰り表</title>
-<link rel="manifest" href="data:application/json,{}">
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22%E6%97%A5%E7%B9%B0%E3%82%8A%E8%A1%A8%22%2C%22short_name%22%3A%22%E6%97%A5%E7%B9%B0%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23f5f5f5%22%2C%22theme_color%22%3A%22%23f5f5f5%22%2C%22lang%22%3A%22ja%22%7D">
 <style>
 *,*::before,*::after{box-sizing:border-box}
 :root{
@@ -132,6 +132,9 @@ table.grid tr.selected{background:#d4e8ff!important}
       <button id="btn-dropbox-disconnect" disabled>切断</button>
     </div>
     <p id="dropbox-status" style="font-size:13px;color:#666">未接続</p>
+    <div class="form-row">
+      <label><input type="checkbox" id="auto-sync"> 保存時にDropboxへ自動同期</label>
+    </div>
     <h3>営業日カレンダー</h3>
     <p style="font-size:13px;color:#666">祝日一覧を外部JSONから取り込みます。カード引落日が土日祝の場合は翌営業日に繰り越されます。</p>
     <p id="calendar-status" style="font-size:13px;color:#666">祝日: 未登録（土日のみ判定）</p>
@@ -189,6 +192,15 @@ function todayStr() {
   return formatDate(t.getFullYear(), t.getMonth(), t.getDate());
 }
 
+function maxDataDate() {
+  const t = new Date();
+  return formatDate(t.getFullYear() + MAX_FUTURE_YEARS, t.getMonth(), t.getDate());
+}
+
+function isWithinDataRange(dateStr) {
+  return dateStr && dateStr <= maxDataDate();
+}
+
 function addMonths(y, m, delta) {
   m += delta;
   while (m > 11) { m -= 12; y++; }
@@ -241,6 +253,7 @@ const Store = {
     if (!this.data.calendar) {
       this.data.calendar = { holidays: [], source: null, lastImported: null };
     }
+    this.migrateEntries();
     const now = new Date();
     this.viewStart = formatDate(now.getFullYear(), now.getMonth(), 1);
     const end = addMonths(now.getFullYear(), now.getMonth(), 3);
@@ -248,10 +261,21 @@ const Store = {
     return this.data;
   },
 
-  save() {
+  save(opts = {}) {
     this.data.meta.lastUpdated = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
     UI.updateSyncBadge('local');
+    if (!opts.skipAutoSync && localStorage.getItem('higuri-auto-sync') === '1' && Dropbox.getToken()) {
+      Dropbox.sync({ silent: true });
+    }
+  },
+
+  migrateEntries() {
+    for (const e of this.data.entries) {
+      delete e._originalAmount;
+      delete e._paymentDate;
+      delete e._period;
+    }
   },
 
   getAccount(id) {
@@ -410,17 +434,24 @@ const CardLogic = {
 
   applyToEntry(entry, card) {
     const payDate = this.getPaymentDate(entry.date, card);
-    const period = this.getPeriodLabel(entry.date, card);
     return {
       ...entry,
       paymentMethod: 'card',
       cardId: card.id,
       accountId: card.accountId,
       skipped: true,
-      skippedNote: `${card.name}の引落日(${payDate})に付替`,
-      _originalAmount: entry.amount,
-      _paymentDate: payDate,
-      _period: period
+      skippedNote: `${card.name}の引落日(${payDate})に付替`
+    };
+  },
+
+  getPaymentInfo(entry, data) {
+    if (entry.paymentMethod !== 'card' || !entry.cardId) return null;
+    const card = data.cards.find(c => c.id === entry.cardId);
+    if (!card) return null;
+    return {
+      payDate: this.getPaymentDate(entry.date, card),
+      period: this.getPeriodLabel(entry.date, card),
+      card
     };
   }
 };
@@ -498,29 +529,46 @@ const Generator = {
           });
         }
       } else if (loan.type === 'long') {
-        let balance = loan.balance;
-        if (balance <= 0) continue;
-        for (const dateStr of dates) {
-          const d = parseDate(dateStr);
-          if (d.getDate() !== loan.paymentDay) continue;
-          if (dateStr < (loan.startDate || '1900-01-01')) continue;
-          const pay = Math.min(loan.monthlyPayment, balance);
-          if (pay <= 0) break;
-          entries.push({
-            id: `gen_loan_${loan.id}_${dateStr}`,
-            date: dateStr,
-            content: `${loan.name}（返済）`,
-            type: 'expense',
-            amount: pay,
-            accountId: loan.accountId,
-            paymentMethod: 'transfer',
-            source: 'loan',
-            skipped: false,
-            _masterId: loan.id
-          });
+        entries.push(...this.generateLongLoanPayments(loan, startStr, endStr));
+      }
+    }
+    return entries;
+  },
+
+  generateLongLoanPayments(loan, startStr, endStr) {
+    const entries = [];
+    let balance = loan.balance;
+    if (balance <= 0) return entries;
+    const loanStart = loan.startDate || '1900-01-01';
+    const endD = parseDate(endStr);
+    let [y, m] = (() => {
+      const d = parseDate(loanStart);
+      return [d.getFullYear(), d.getMonth()];
+    })();
+    const [endY, endM] = [endD.getFullYear(), endD.getMonth()];
+    while (balance > 0 && (y < endY || (y === endY && m <= endM))) {
+      const dateStr = formatDate(y, m, clampDay(y, m, loan.paymentDay));
+      if (dateStr >= loanStart) {
+        const pay = Math.min(loan.monthlyPayment, balance);
+        if (pay > 0) {
+          if (dateStr >= startStr && dateStr <= endStr) {
+            entries.push({
+              id: `gen_loan_${loan.id}_${dateStr}`,
+              date: dateStr,
+              content: `${loan.name}（返済）`,
+              type: 'expense',
+              amount: pay,
+              accountId: loan.accountId,
+              paymentMethod: 'transfer',
+              source: 'loan',
+              skipped: false,
+              _masterId: loan.id
+            });
+          }
           balance -= pay;
         }
       }
+      [y, m] = addMonths(y, m, 1);
     }
     return entries;
   },
@@ -528,29 +576,30 @@ const Generator = {
   generateCardSettlements(allEntries, data) {
     const settlements = [];
     const cardExpenses = allEntries.filter(e =>
-      e.paymentMethod === 'card' && e.skipped && e._paymentDate
+      e.paymentMethod === 'card' && e.skipped && e.cardId
     );
 
     const groups = {};
     for (const e of cardExpenses) {
-      const key = `${e.cardId}_${e._paymentDate}`;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(e);
+      const info = CardLogic.getPaymentInfo(e, data);
+      if (!info) continue;
+      const key = `${e.cardId}_${info.payDate}`;
+      if (!groups[key]) groups[key] = { payDate: info.payDate, period: info.period, items: [] };
+      groups[key].items.push(e);
     }
 
-    for (const [key, items] of Object.entries(groups)) {
+    for (const { payDate, period, items } of Object.values(groups)) {
       const cardId = items[0].cardId;
       const card = data.cards.find(c => c.id === cardId);
       if (!card) continue;
-      const payDate = items[0]._paymentDate;
-      const total = items.reduce((s, e) => s + (e._originalAmount || e.amount), 0);
-      const period = items[0]._period || '';
+      const total = items.reduce((s, e) => s + e.amount, 0);
       const linkedIds = items.map(e => e.id);
       const existing = data.entries.find(e =>
         e.source === 'cardSettlement' && e.cardId === cardId && e.date === payDate
       );
+      const settlementId = existing ? existing.id : `gen_settle_${cardId}_${payDate}`;
       settlements.push({
-        id: existing ? existing.id : `gen_settle_${cardId}_${payDate}`,
+        id: settlementId,
         date: payDate,
         content: `${card.name}引落（${period}・${items.length}件）`,
         type: 'expense',
@@ -560,8 +609,7 @@ const Generator = {
         cardId: cardId,
         source: 'cardSettlement',
         skipped: false,
-        linkedEntryIds: linkedIds,
-        _generated: !existing
+        linkedEntryIds: linkedIds
       });
     }
     return settlements;
@@ -665,7 +713,7 @@ const Calculator = {
         rows.push({
           ...e,
           displayAmount: e.skipped ? 0 : e.amount,
-          originalAmount: e.skipped ? (e._originalAmount || e.amount) : e.amount,
+          originalAmount: e.amount,
           runningBalance: null
         });
       }
@@ -719,8 +767,10 @@ const UI = {
   setViewMonths() {
     const s = parseDate(Store.viewStart);
     const e = parseDate(Store.viewEnd);
+    const maxD = parseDate(maxDataDate());
     document.getElementById('view-start').value = `${s.getFullYear()}-${pad2(s.getMonth() + 1)}`;
     document.getElementById('view-end').value = `${e.getFullYear()}-${pad2(e.getMonth() + 1)}`;
+    document.getElementById('view-end').max = `${maxD.getFullYear()}-${pad2(maxD.getMonth() + 1)}`;
   },
 
   bindTabs() {
@@ -760,7 +810,10 @@ const UI = {
     };
     document.getElementById('view-end').onchange = (e) => {
       const [y, m] = e.target.value.split('-').map(Number);
-      Store.viewEnd = formatDate(y, m - 1, daysInMonth(y, m - 1));
+      const endDate = formatDate(y, m - 1, daysInMonth(y, m - 1));
+      Store.viewEnd = isWithinDataRange(endDate) ? endDate : maxDataDate();
+      if (Store.viewEnd !== endDate) alert(`表示期間は最大${MAX_FUTURE_YEARS}年先までです`);
+      this.setViewMonths();
       this.renderLedger();
     };
   },
@@ -781,6 +834,11 @@ const UI = {
     document.getElementById('btn-dropbox-connect').onclick = () => Dropbox.connect();
     document.getElementById('btn-dropbox-sync').onclick = () => Dropbox.sync();
     document.getElementById('btn-dropbox-disconnect').onclick = () => Dropbox.disconnect();
+    const autoSyncEl = document.getElementById('auto-sync');
+    autoSyncEl.checked = localStorage.getItem('higuri-auto-sync') === '1';
+    autoSyncEl.onchange = (e) => {
+      localStorage.setItem('higuri-auto-sync', e.target.checked ? '1' : '0');
+    };
     document.getElementById('btn-export').onclick = () => {
       const blob = new Blob([JSON.stringify(Store.data, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
@@ -978,7 +1036,7 @@ const UI = {
     const panel = document.getElementById('detail-panel');
     const linked = (entry.linkedEntryIds || []).map(id => {
       const e = Store.data.entries.find(x => x.id === id);
-      return e ? `<li>${e.date} ${this.esc(e.content)} — ${formatYen(e._originalAmount || e.amount)}円</li>` : '';
+      return e ? `<li>${e.date} ${this.esc(e.content)} — ${formatYen(e.amount)}円</li>` : '';
     }).join('');
     panel.innerHTML = `<h4>${this.esc(entry.content)}</h4><p>引落金額: <strong>${formatYen(entry.amount)}円</strong></p><ul>${linked || '<li>内訳なし</li>'}</ul>`;
     panel.classList.remove('hidden');
@@ -1062,6 +1120,35 @@ const Modal = {
     document.getElementById('modal-root').innerHTML = '';
   },
 
+  openSyncConflict(localTime, remoteTime) {
+    return new Promise((resolve) => {
+      const root = document.getElementById('modal-root');
+      const newer = remoteTime > localTime ? 'Dropbox' : 'ローカル';
+      root.innerHTML = `<div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+          <h3>同期の競合</h3>
+          <p style="font-size:13px">ローカルとDropboxのデータが異なります。どちらを使いますか？</p>
+          <table style="width:100%;font-size:13px;margin:12px 0;border-collapse:collapse">
+            <tr><td style="padding:4px;border:1px solid #bbb">ローカル</td><td style="padding:4px;border:1px solid #bbb">${localTime.toLocaleString()}</td></tr>
+            <tr><td style="padding:4px;border:1px solid #bbb">Dropbox</td><td style="padding:4px;border:1px solid #bbb">${remoteTime.toLocaleString()}</td></tr>
+          </table>
+          <p style="font-size:12px;color:#666">※上書き前に両方のバックアップをDropbox（shikinguri-backups/）とローカルに保存します。</p>
+          <div class="form-actions">
+            <button data-action="cancel">キャンセル</button>
+            <button data-action="remote">Dropboxを使う</button>
+            <button data-action="local" class="primary">ローカルを使う</button>
+          </div>
+        </div>
+      </div>`;
+      root.querySelector('#modal-overlay').addEventListener('click', (e) => {
+        if (e.target.id === 'modal-overlay') { this.close(); resolve('cancel'); }
+      });
+      root.querySelector('[data-action="cancel"]').onclick = () => { this.close(); resolve('cancel'); };
+      root.querySelector('[data-action="remote"]').onclick = () => { this.close(); resolve('remote'); };
+      root.querySelector('[data-action="local"]').onclick = () => { this.close(); resolve('local'); };
+    });
+  },
+
   accountOptions(selected) {
     return Store.data.accounts.map(a =>
       `<option value="${a.id}" ${a.id === selected ? 'selected' : ''}>${UI.esc(a.name)}</option>`
@@ -1083,7 +1170,7 @@ const Modal = {
     };
     this.open(`
       <h3>${isNew ? '入出金追加' : '入出金編集'}</h3>
-      <div class="form-row"><label>日付</label><input type="date" id="f-date" value="${e.date}"></div>
+      <div class="form-row"><label>日付</label><input type="date" id="f-date" value="${e.date}" max="${maxDataDate()}"></div>
       <div class="form-row"><label>内容</label><input type="text" id="f-content" value="${UI.esc(e.content)}"></div>
       <div class="form-row"><label>区分</label>
         <select id="f-type"><option value="income" ${e.type==='income'?'selected':''}>入金</option>
@@ -1110,6 +1197,10 @@ const Modal = {
         source: 'manual', skipped: false, splitGroupId: e.splitGroupId || null
       };
       if (!data.content) { alert('内容を入力してください'); return false; }
+      if (!isWithinDataRange(data.date)) {
+        alert(`日付は本日から最大${MAX_FUTURE_YEARS}年先までです`);
+        return false;
+      }
       if (isNew) Store.addEntry(data);
       else Store.updateEntry(id, data);
       UI.renderLedger();
@@ -1186,8 +1277,7 @@ const Modal = {
       const updated = CardLogic.applyToEntry({ ...entry }, card);
       Store.updateEntry(id, {
         paymentMethod: 'card', cardId, accountId: card.accountId,
-        skipped: true, skippedNote: updated.skippedNote,
-        _originalAmount: entry.amount, _paymentDate: updated._paymentDate, _period: updated._period
+        skipped: true, skippedNote: updated.skippedNote
       });
       UI.renderLedger();
       return true;
@@ -1496,33 +1586,91 @@ const Dropbox = {
     } else throw new Error('トークン更新失敗');
   },
 
-  async sync() {
-    if (!this.getToken()) { alert('Dropboxに接続してください'); return; }
+  saveLocalBackup(data, label) {
+    try {
+      localStorage.setItem(`higuri-backup-${label}-${Date.now()}`, JSON.stringify(data));
+    } catch (e) { console.warn('Local backup failed:', e); }
+  },
+
+  async backupToDropbox(data, label) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const path = `/shikinguri-backups/shikinguri-data.${label}.${ts}.json`;
+    try {
+      const res = await this.apiFetch('https://content.dropboxapi.com/2/files/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Dropbox-API-Arg': JSON.stringify({ path, mode: 'add', autorename: true, mute: true })
+        },
+        body: JSON.stringify(data, null, 2)
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('Dropbox backup failed:', e);
+      return false;
+    }
+  },
+
+  applyRemoteData(remote) {
+    Store.data = remote;
+    if (!Store.data.calendar) {
+      Store.data.calendar = { holidays: [], source: null, lastImported: null };
+    }
+    Store.migrateEntries();
+    Store.save({ skipAutoSync: true });
+  },
+
+  async sync(opts = {}) {
+    const silent = !!opts.silent;
+    if (!this.getToken()) {
+      if (!silent) alert('Dropboxに接続してください');
+      return;
+    }
     UI.updateSyncBadge('warn', '同期中...');
     try {
+      let remote = null;
       const dlRes = await this.apiFetch('https://content.dropboxapi.com/2/files/download', {
         method: 'POST',
         headers: { 'Dropbox-API-Arg': JSON.stringify({ path: DROPBOX_FILE }) }
       });
       if (dlRes.ok) {
-        const remoteText = await dlRes.text();
-        const remote = JSON.parse(remoteText);
-        const local = Store.data;
-        const remoteTime = new Date(remote.meta?.lastUpdated || 0);
-        const localTime = new Date(local.meta?.lastUpdated || 0);
-        if (remoteTime > localTime) {
-          const useRemote = localTime.getTime() === 0 || confirm(
-            `Dropboxのデータ(${remoteTime.toLocaleString()})の方が新しいです。Dropboxのデータを使いますか？`
-          );
-          if (useRemote) {
-            Store.data = remote;
-            Store.save();
-          }
-        }
+        remote = JSON.parse(await dlRes.text());
       } else if (dlRes.status !== 409) {
-        const err = await dlRes.text();
-        console.warn('Download:', err);
+        console.warn('Download:', await dlRes.text());
       }
+
+      const local = Store.data;
+      const localTime = new Date(local.meta?.lastUpdated || 0);
+      const remoteTime = remote ? new Date(remote.meta?.lastUpdated || 0) : null;
+      const drift = remoteTime && Math.abs(remoteTime - localTime) > 1000;
+
+      if (remote && drift) {
+        if (remoteTime > localTime) {
+          if (silent) {
+            UI.updateSyncBadge('warn', 'Dropboxが新しい');
+            return;
+          }
+          const choice = await Modal.openSyncConflict(localTime, remoteTime);
+          if (choice === 'cancel') {
+            UI.updateSyncBadge('ok', '同期待ち');
+            return;
+          }
+          this.saveLocalBackup(remote, 'remote');
+          await this.backupToDropbox(remote, 'remote');
+          if (choice === 'remote') {
+            this.saveLocalBackup(local, 'local');
+            this.applyRemoteData(remote);
+          } else {
+            this.saveLocalBackup(local, 'local');
+          }
+        } else {
+          this.saveLocalBackup(remote, 'remote');
+          await this.backupToDropbox(remote, 'remote');
+        }
+      }
+
+      await this.backupToDropbox(Store.data, 'local');
+      this.saveLocalBackup(Store.data, 'local');
 
       const uploadRes = await this.apiFetch('https://content.dropboxapi.com/2/files/upload', {
         method: 'POST',
@@ -1537,7 +1685,7 @@ const Dropbox = {
       UI.renderAll();
     } catch (e) {
       UI.updateSyncBadge('err', '同期失敗');
-      alert('同期エラー: ' + e.message);
+      if (!silent) alert('同期エラー: ' + e.message);
     }
   },
 
